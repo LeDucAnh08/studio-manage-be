@@ -18,6 +18,9 @@ import userRoutes from './routes/users';
 import telegramRoutes from './routes/telegram';
 import seasonController from './routes/season';
 import dashboardRoutes from './routes/dashboard';
+import accountRequestRoutes from './routes/accountRequests';
+import bookingRoutes from './routes/bookings';
+import workflowRoutes from './routes/workflows';
 
 const envFile = '.env';
 dotenv.config({ path: path.resolve(__dirname, '..', envFile) });
@@ -25,10 +28,30 @@ dotenv.config({ path: path.resolve(__dirname, '..', envFile) });
 const app = express();
 
 const corsOrigin = process.env.CORS_ORIGIN;
-app.use(cors(corsOrigin ? { origin: corsOrigin.split(','), credentials: true } : undefined));
-app.use(express.json());
+app.disable('x-powered-by');
+if (process.env.NODE_ENV === 'production') app.set('trust proxy', 1);
+app.use(
+  cors(
+    corsOrigin
+      ? { origin: corsOrigin.split(',').map((origin) => origin.trim()), credentials: true }
+      : process.env.NODE_ENV === 'production'
+        ? { origin: false }
+        : undefined,
+  ),
+);
+app.use((_req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  next();
+});
+app.use(express.json({ limit: '100kb' }));
 
 app.use('/api/auth', authRoutes);
+app.use('/api/account-requests', accountRequestRoutes);
+app.use('/api/workflows', workflowRoutes);
+app.use('/api/bookings', bookingRoutes);
 app.use('/api/customers', customerRoutes);
 app.use('/api/schedules', scheduleRoutes);
 app.use('/api/transactions', transactionRoutes);

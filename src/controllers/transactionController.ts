@@ -1,10 +1,7 @@
 import { Request, Response } from 'express';
 import Transaction from '../models/Transaction';
 import Season from '../models/Season';
-import type {
-  TransactionResponse,
-  TransactionSummaryRow,
-} from '../types/dto';
+import type { TransactionResponse, TransactionSummaryRow } from '../types/dto';
 import { notifyByRoles } from '../services/telegramService';
 import { resolveSeasonForDate } from '../utils/seasonCache';
 import { sendResponse } from '../utils/response';
@@ -38,10 +35,7 @@ const buildFilter = (q: TransactionQuery) => {
   return filter;
 };
 
-export const getAll = async (
-  req: Request,
-  res: Response,
-): Promise<void> => {
+export const getAll = async (req: Request, res: Response): Promise<void> => {
   const { page = '1', limit = '20', season, ...rest } = req.query as TransactionQuery;
   const filter = buildFilter(rest);
   if (!isPrivileged(req.user!.roles)) {
@@ -61,7 +55,8 @@ export const getAll = async (
   }
   const skip = (Number(page) - 1) * Number(limit);
   const USER_FIELDS = '_id username name roles isActive createdAt';
-  const CUSTOMER_FIELDS = '_id className school contactName contactPhone contactAddress total totalMale totalFemale notes createdAt';
+  const CUSTOMER_FIELDS =
+    '_id className school contactName contactPhone contactAddress total totalMale totalFemale notes createdAt';
   const [data, total] = await Promise.all([
     Transaction.find(filter)
       .populate('customer', CUSTOMER_FIELDS)
@@ -76,10 +71,7 @@ export const getAll = async (
   sendResponse(res, 200, true, 'OK', data, { total, page: Number(page), limit: Number(limit) });
 };
 
-export const getOne = async (
-  req: Request,
-  res: Response,
-): Promise<void> => {
+export const getOne = async (req: Request, res: Response): Promise<void> => {
   const tx = await Transaction.findById(req.params.id)
     .populate('customer')
     .populate('categoryId')
@@ -96,6 +88,8 @@ export const create = async (req: Request, res: Response): Promise<void> => {
   const createdBy =
     isPrivileged(req.user!.roles) && req.body.createdBy ? req.body.createdBy : req.user!._id;
   const payload = { ...req.body, createdBy };
+  delete payload.workflowBooking;
+  delete payload.workflowPayment;
   if (!payload.season) {
     payload.season = await resolveSeasonForDate(payload.date);
   }
@@ -121,7 +115,19 @@ export const create = async (req: Request, res: Response): Promise<void> => {
 };
 
 export const update = async (req: Request, res: Response): Promise<void> => {
+  const existing = await Transaction.findById(req.params.id).select('workflowPayment').lean();
+  if (existing?.workflowPayment) {
+    sendResponse(
+      res,
+      409,
+      false,
+      'Booking payment records must be changed through the booking workflow',
+    );
+    return;
+  }
   const updateData = { ...req.body };
+  delete updateData.workflowBooking;
+  delete updateData.workflowPayment;
   if (!isPrivileged(req.user!.roles)) {
     delete updateData.createdBy;
   }
@@ -141,6 +147,16 @@ export const update = async (req: Request, res: Response): Promise<void> => {
 };
 
 export const remove = async (req: Request, res: Response): Promise<void> => {
+  const existing = await Transaction.findById(req.params.id).select('workflowPayment').lean();
+  if (existing?.workflowPayment) {
+    sendResponse(
+      res,
+      409,
+      false,
+      'Booking payment records cannot be deleted through the legacy route',
+    );
+    return;
+  }
   const tx = await Transaction.findByIdAndDelete(req.params.id);
   if (!tx) {
     sendResponse(res, 404, false, 'Not found');
@@ -149,10 +165,7 @@ export const remove = async (req: Request, res: Response): Promise<void> => {
   sendResponse(res, 200, true, 'Đã xóa giao dịch');
 };
 
-export const getSummary = async (
-  req: Request,
-  res: Response,
-): Promise<void> => {
+export const getSummary = async (req: Request, res: Response): Promise<void> => {
   const { dateFrom, dateTo } = req.query as { dateFrom?: string; dateTo?: string };
   const matchDate: Record<string, Date> = {};
   if (dateFrom) matchDate.$gte = new Date(dateFrom);

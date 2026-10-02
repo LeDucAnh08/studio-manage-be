@@ -1,10 +1,11 @@
 import { Router } from 'express';
 import { protect } from '../middleware/auth';
+import { requireRole } from '../middleware/role';
 import * as c from '../controllers/costumeController';
 
 const router = Router();
 
-router.use(protect);
+router.use(protect, requireRole(0, 1));
 
 router.route('/').get(c.getAll).post(c.create);
 router.route('/:id').put(c.update).delete(c.remove);

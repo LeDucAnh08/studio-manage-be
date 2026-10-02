@@ -43,14 +43,10 @@ const migrate = async (): Promise<void> => {
     $or: [{ season: null }, { season: { $exists: false } }],
   });
   if (unmatched > 0) {
-    console.log(
-      `\n⚠️  ${unmatched} lịch chụp không nằm trong mùa chụp nào (giữ season = null)`,
-    );
+    console.log(`\n⚠️  ${unmatched} lịch chụp không nằm trong mùa chụp nào (giữ season = null)`);
   }
 
-  console.log(
-    `\n✅ Hoàn tất: ${totalUpdated} lịch chụp đã gán mùa, ${unmatched} bỏ qua`,
-  );
+  console.log(`\n✅ Hoàn tất: ${totalUpdated} lịch chụp đã gán mùa, ${unmatched} bỏ qua`);
 
   await mongoose.disconnect();
   console.log('Disconnected');

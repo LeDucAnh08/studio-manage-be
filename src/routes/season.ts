@@ -1,8 +1,7 @@
-import { Router } from "express";
+import { Router } from 'express';
 import * as seasonController from '../controllers/seasonController';
 import { protect } from '../middleware/auth';
-import { requireRole } from "../middleware/role";
-
+import { requireRole } from '../middleware/role';
 
 const router = Router();
 

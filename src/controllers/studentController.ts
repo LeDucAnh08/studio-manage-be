@@ -2,11 +2,9 @@ import { Request, Response } from 'express';
 import Student from '../models/Student';
 import type { StudentResponse } from '../types/dto';
 import { sendResponse } from '../utils/response';
+import BookingWorkflow from '../models/BookingWorkflow';
 
-export const getAll = async (
-  req: Request,
-  res: Response,
-): Promise<void> => {
+export const getAll = async (req: Request, res: Response): Promise<void> => {
   const { customer, search, page = '1', limit = '50' } = req.query as Record<string, string>;
   const query: Record<string, unknown> = {};
   if (customer) query.customer = customer;
@@ -32,10 +30,7 @@ export const getAll = async (
   });
 };
 
-export const getOne = async (
-  req: Request,
-  res: Response,
-): Promise<void> => {
+export const getOne = async (req: Request, res: Response): Promise<void> => {
   const student = await Student.findById(req.params.id)
     .populate('costumes')
     .lean<StudentResponse | null>();
@@ -52,10 +47,16 @@ export const create = async (req: Request, res: Response): Promise<void> => {
   sendResponse(res, 201, true, 'Tạo học sinh thành công', student);
 };
 
-export const update = async (
-  req: Request,
-  res: Response,
-): Promise<void> => {
+export const update = async (req: Request, res: Response): Promise<void> => {
+  if (await BookingWorkflow.exists({ 'members.student': req.params.id })) {
+    sendResponse(
+      res,
+      409,
+      false,
+      'Students linked to a booking must be edited through the booking workflow',
+    );
+    return;
+  }
   const student = await Student.findByIdAndUpdate(req.params.id, req.body, {
     new: true,
     runValidators: true,
@@ -70,6 +71,15 @@ export const update = async (
 };
 
 export const remove = async (req: Request, res: Response): Promise<void> => {
+  if (await BookingWorkflow.exists({ 'members.student': req.params.id })) {
+    sendResponse(
+      res,
+      409,
+      false,
+      'Students linked to a booking cannot be deleted through the legacy route',
+    );
+    return;
+  }
   const student = await Student.findByIdAndDelete(req.params.id);
   if (!student) {
     sendResponse(res, 404, false, 'Not found');

@@ -17,6 +17,14 @@ export interface ISchedule extends Document {
   contractUrl?: string;
   driveFolderUrl?: string;
   driveFolderId?: string;
+  workflowBooking?: Types.ObjectId;
+  costumeReservations?: Array<{
+    costume: Types.ObjectId;
+    size: string;
+    quantity: number;
+    receiveDate: Date;
+    returnDate: Date;
+  }>;
 }
 
 const scheduleSchema = new Schema<ISchedule>(
@@ -41,6 +49,17 @@ const scheduleSchema = new Schema<ISchedule>(
     contractUrl: { type: String },
     driveFolderUrl: { type: String },
     driveFolderId: { type: String },
+    workflowBooking: { type: Schema.Types.ObjectId, ref: 'Booking' },
+    costumeReservations: [
+      {
+        _id: false,
+        costume: { type: Schema.Types.ObjectId, ref: 'Costume', required: true },
+        size: { type: String, required: true },
+        quantity: { type: Number, required: true, min: 1 },
+        receiveDate: { type: Date, required: true },
+        returnDate: { type: Date, required: true },
+      },
+    ],
   },
   { timestamps: true },
 );
@@ -52,5 +71,7 @@ scheduleSchema.index({ season: 1 });
 scheduleSchema.index({ season: 1, shootDate: -1 });
 scheduleSchema.index({ leadPhotographer: 1, shootDate: 1 });
 scheduleSchema.index({ supportPhotographers: 1, shootDate: 1 });
+scheduleSchema.index({ workflowBooking: 1 }, { unique: true, sparse: true });
+scheduleSchema.index({ costumes: 1, shootDate: 1, status: 1 });
 
 export default mongoose.model<ISchedule>('Schedule', scheduleSchema);

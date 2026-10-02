@@ -24,7 +24,7 @@ const COLLECTIONS = [
   'seasons',
   'users',
   'costumes',
-  'costumtypes',  // mongoose pluralises CostumeType → costumtypes
+  'costumtypes', // mongoose pluralises CostumeType → costumtypes
   'costumetypes', // phòng trường hợp tên khác
   'categories',
   'packages',
@@ -42,11 +42,7 @@ async function openConnection(uri: string, label: string): Promise<Connection> {
   return conn;
 }
 
-async function copyCollection(
-  src: Connection,
-  dst: Connection,
-  name: string,
-): Promise<void> {
+async function copyCollection(src: Connection, dst: Connection, name: string): Promise<void> {
   const srcCol = src.collection(name);
   const dstCol = dst.collection(name);
 

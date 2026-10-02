@@ -1,6 +1,5 @@
-import type { Document } from "mongoose";
-import mongoose from "mongoose";
-
+import type { Document } from 'mongoose';
+import mongoose from 'mongoose';
 
 export interface ISeason extends Document {
   name: string;
@@ -14,10 +13,10 @@ const seasonSchema = new mongoose.Schema<ISeason>(
     startDate: { type: Date, required: true },
     endDate: { type: Date, required: true },
   },
-  { timestamps: true }
+  { timestamps: true },
 );
 
 // Compound index for resolveSeasonForDate queries (startDate <= date <= endDate)
 seasonSchema.index({ startDate: 1, endDate: 1 });
 
-export default mongoose.model<ISeason>("Season", seasonSchema);
+export default mongoose.model<ISeason>('Season', seasonSchema);

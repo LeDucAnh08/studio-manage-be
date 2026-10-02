@@ -1,7 +1,10 @@
+import BookingWorkflow, { type IBookingWorkflow } from '../models/BookingWorkflow';
+import { selectAcceptedContractQuote, acceptedContractTerms } from '../utils/workflowContract';
 import { Request, Response } from 'express';
 import PDFDocument from 'pdfkit';
 import path from 'path';
 import Schedule from '../models/Schedule';
+import Customer from '../models/Customer';
 import type { ICustomer } from '../models/Customer';
 import type { IUser } from '../models/User';
 import type { ISeason } from '../models/Season';
@@ -10,6 +13,10 @@ import { notifyUsers } from '../services/telegramService';
 import { createFolderAndLog, deleteFolderAndRow } from '../services/googleSheetService';
 import { resolveSeasonForDate } from '../utils/seasonCache';
 import { sendResponse } from '../utils/response';
+import Costume from '../models/Costume';
+import { ClientSession, Types } from 'mongoose';
+import { withResourceTransaction, WorkflowProblem } from '../services/workflowTransactions';
+import { workflowEnabled } from '../services/workflowTransactions';
 
 interface ScheduleQuery {
   customer?: string;
@@ -36,6 +43,206 @@ const buildFilter = (q: ScheduleQuery) => {
 
 const FONT_REGULAR = path.join(__dirname, '../../src/assets/fonts/Roboto-Regular.ttf');
 const FONT_BOLD = path.join(__dirname, '../../src/assets/fonts/Roboto-Bold.ttf');
+
+const vietnamDay = (value: Date | string): Date => {
+  const shifted = new Date(new Date(value).getTime() + 7 * 60 * 60 * 1000);
+  return new Date(
+    Date.UTC(shifted.getUTCFullYear(), shifted.getUTCMonth(), shifted.getUTCDate()) -
+      7 * 60 * 60 * 1000,
+  );
+};
+const clockMinutes = (value: unknown): number | null => {
+  if (typeof value !== 'string' || !/^([01]\d|2[0-3]):[0-5]\d$/.test(value)) return null;
+  const [hour, minute] = value.split(':').map(Number);
+  return hour * 60 + minute;
+};
+const ids = (value: unknown): string[] =>
+  Array.isArray(value) ? value.filter(Types.ObjectId.isValid).map(String) : [];
+
+const ensureScheduleResourcesAvailable = async (
+  proposed: any,
+  session: ClientSession,
+  excludeId?: Types.ObjectId,
+): Promise<void> => {
+  if (proposed.status === 'cancelled') return;
+  const shootDate = vietnamDay(proposed.shootDate);
+  if (!Number.isFinite(shootDate.getTime()))
+    throw new WorkflowProblem(400, 'Ngày chụp không hợp lệ');
+  const start = clockMinutes(proposed.startTime);
+  const end = clockMinutes(proposed.endTime);
+  const photographerIds = [
+    ...new Set(
+      [proposed.leadPhotographer, ...(proposed.supportPhotographers ?? [])]
+        .filter(Boolean)
+        .map(String),
+    ),
+  ];
+  if (photographerIds.length && (start === null || end === null || end <= start)) {
+    throw new WorkflowProblem(409, 'Lịch có thợ chụp cần khung giờ hợp lệ để kiểm tra xung đột');
+  }
+  if (photographerIds.length && ['pending', 'confirmed'].includes(proposed.status ?? 'pending')) {
+    const schedules = await Schedule.find({
+      status: { $in: ['pending', 'confirmed'] },
+      shootDate: {
+        $gte: new Date(shootDate.getTime() - 7 * 60 * 60 * 1000),
+        $lt: new Date(shootDate.getTime() + 86400000 + 7 * 60 * 60 * 1000),
+      },
+      $or: [
+        { leadPhotographer: { $in: photographerIds } },
+        { supportPhotographers: { $in: photographerIds } },
+      ],
+      ...(excludeId ? { _id: { $ne: excludeId } } : {}),
+    })
+      .session(session)
+      .lean();
+    for (const existing of schedules) {
+      if (vietnamDay(existing.shootDate).getTime() !== shootDate.getTime()) continue;
+      const oldStart = clockMinutes(existing.startTime);
+      const oldEnd = clockMinutes(existing.endTime);
+      if (oldStart === null || oldEnd === null)
+        throw new WorkflowProblem(
+          409,
+          'Lịch cũ chưa có khung giờ; hãy đối soát lịch đó trước khi phân công thợ chụp',
+        );
+      if (start! < oldEnd && oldStart < end!)
+        throw new WorkflowProblem(409, 'Thợ chụp đã có lịch bị trùng giờ');
+    }
+  }
+
+  const costumeIds = [...new Set(ids(proposed.costumes))];
+  const reservations = Array.isArray(proposed.costumeReservations)
+    ? proposed.costumeReservations
+    : [];
+  if (
+    reservations.some(
+      (item: any) =>
+        !Types.ObjectId.isValid(item?.costume) ||
+        typeof item.size !== 'string' ||
+        !item.size.trim(),
+    )
+  )
+    throw new WorkflowProblem(400, 'Mã trang phục hoặc kích cỡ không hợp lệ');
+  const entries = reservations.length
+    ? reservations.map((item: any) => ({
+        costumeId: String(item.costume),
+        size: String(item.size),
+        quantity: Number(item.quantity),
+        receiveDate: vietnamDay(item.receiveDate),
+        returnDate: vietnamDay(item.returnDate),
+      }))
+    : costumeIds.map((costumeId) => ({
+        costumeId,
+        size: null as string | null,
+        quantity: 1,
+        receiveDate: shootDate,
+        returnDate: shootDate,
+      }));
+  if (
+    reservations.length &&
+    (new Set(entries.map((entry: any) => entry.costumeId)).size !== costumeIds.length ||
+      costumeIds.some((id) => !entries.some((entry: any) => entry.costumeId === id)))
+  ) {
+    throw new WorkflowProblem(400, 'Lịch cần khai báo kích cỡ cho toàn bộ trang phục đã chọn');
+  }
+  const reservationKeys = new Set<string>();
+  for (const entry of entries) {
+    const key = `${entry.costumeId}:${entry.size ?? '*'}`;
+    if (reservationKeys.has(key))
+      throw new WorkflowProblem(400, 'Mỗi trang phục và kích cỡ chỉ được khai báo một lần');
+    reservationKeys.add(key);
+    if (entry.receiveDate > shootDate || entry.returnDate < shootDate)
+      throw new WorkflowProblem(400, 'Ngày nhận và trả trang phục phải bao gồm ngày chụp');
+  }
+  for (const entry of entries) {
+    if (!costumeIds.includes(entry.costumeId))
+      throw new WorkflowProblem(
+        400,
+        'Các lượt giữ trang phục phải khớp danh sách trang phục của lịch',
+      );
+    if (
+      !Number.isSafeInteger(entry.quantity) ||
+      entry.quantity < 1 ||
+      !Number.isFinite(entry.receiveDate.getTime()) ||
+      !Number.isFinite(entry.returnDate.getTime()) ||
+      entry.receiveDate > entry.returnDate ||
+      entry.returnDate.getTime() - entry.receiveDate.getTime() > 365 * 86400000
+    ) {
+      throw new WorkflowProblem(
+        400,
+        'Khoảng ngày, kích cỡ hoặc số lượng giữ trang phục không hợp lệ',
+      );
+    }
+    const costume = await Costume.findById(entry.costumeId).session(session).lean();
+    if (!costume) throw new WorkflowProblem(409, 'Một trang phục đã bị xóa hoặc không còn tồn tại');
+    const sizes = entry.size
+      ? [entry.size]
+      : (costume.inventory ?? [])
+          .filter((row: any) => row.condition === 'good' && row.quantity > 0)
+          .map((row: any) => row.size);
+    for (const size of sizes) {
+      const good = (costume.inventory ?? [])
+        .filter((row: any) => row.size === size && row.condition === 'good')
+        .reduce((sum: number, row: any) => sum + row.quantity, 0);
+      const requested = entry.size ? entry.quantity : good;
+      if (entry.size && good < entry.quantity)
+        throw new WorkflowProblem(
+          409,
+          `Không đủ trang phục tình trạng tốt cỡ ${size}: ${costume.name}`,
+        );
+      const existing = (await Schedule.find({
+        status: { $in: ['pending', 'confirmed', 'completed'] },
+        costumes: entry.costumeId,
+        ...(excludeId ? { _id: { $ne: excludeId } } : {}),
+      })
+        .session(session)
+        .lean()) as any[];
+      for (
+        let day = entry.receiveDate.getTime();
+        day <= entry.returnDate.getTime();
+        day += 86400000
+      ) {
+        const currentDay = new Date(day);
+        let used = 0;
+        for (const row of existing) {
+          const matching = (row.costumeReservations ?? []).filter(
+            (item: any) => String(item.costume) === entry.costumeId,
+          );
+          if (matching.length) {
+            if (entry.size)
+              used += matching
+                .filter(
+                  (item: any) =>
+                    item.size === size &&
+                    vietnamDay(item.receiveDate) <= currentDay &&
+                    vietnamDay(item.returnDate) >= currentDay,
+                )
+                .reduce((sum: number, item: any) => sum + item.quantity, 0);
+            else if (
+              matching.some(
+                (item: any) =>
+                  vietnamDay(item.receiveDate) <= currentDay &&
+                  vietnamDay(item.returnDate) >= currentDay,
+              )
+            )
+              used = good;
+          } else if (vietnamDay(row.shootDate).getTime() === currentDay.getTime()) {
+            used = good;
+          }
+        }
+        if (used + requested > good)
+          throw new WorkflowProblem(
+            409,
+            `Không đủ số lượng trang phục còn trống cỡ ${size}: ${costume.name}`,
+          );
+      }
+    }
+  }
+};
+
+const sendScheduleProblem = (res: Response, error: unknown): void => {
+  const problem = error as WorkflowProblem;
+  sendResponse(res, problem.status ?? 500, false, problem.message ?? 'Internal server error');
+};
 
 export const getAll = async (req: Request, res: Response): Promise<void> => {
   const { page = '1', limit = '20', season, ...rest } = req.query as ScheduleQuery;
@@ -100,11 +307,46 @@ export const getOne = async (req: Request, res: Response): Promise<void> => {
 };
 
 export const create = async (req: Request, res: Response): Promise<void> => {
+  if (Object.prototype.hasOwnProperty.call(req.body, 'workflowBooking')) {
+    sendResponse(
+      res,
+      400,
+      false,
+      'Workflow schedule links can only be managed by the booking workflow',
+    );
+    return;
+  }
   const payload = { ...req.body };
+  delete payload._id;
+  delete payload.__v;
+  delete payload.createdAt;
+  delete payload.updatedAt;
   if (payload.season === undefined || payload.season === null || payload.season === '') {
     payload.season = await resolveSeasonForDate(payload.shootDate);
   }
-  const schedule = await Schedule.create(payload);
+  if (
+    !Types.ObjectId.isValid(payload.customer) ||
+    !(await Customer.exists({ _id: payload.customer }))
+  ) {
+    sendResponse(res, 400, false, 'Customer is required for a schedule');
+    return;
+  }
+  let schedule: any;
+  if (workflowEnabled()) {
+    try {
+      await withResourceTransaction(async (session) => {
+        if (!(await Customer.exists({ _id: payload.customer }).session(session)))
+          throw new WorkflowProblem(400, 'Customer is required for a schedule');
+        await ensureScheduleResourcesAvailable(payload, session);
+        [schedule] = await Schedule.create([payload], { session });
+      });
+    } catch (error) {
+      sendScheduleProblem(res, error);
+      return;
+    }
+  } else {
+    schedule = await Schedule.create(payload);
+  }
 
   // Lấy bản populate để dựng tên folder + nội dung thông báo
   const full = await Schedule.findById(schedule._id)
@@ -181,21 +423,76 @@ export const create = async (req: Request, res: Response): Promise<void> => {
 };
 
 export const update = async (req: Request, res: Response): Promise<void> => {
-  const prevSchedule = await Schedule.findById(req.params.id).lean();
-  const updateData = { ...req.body };
-  // Nếu đổi ngày chụp mà client không gửi season, tự động tính lại theo mùa.
-  if (
-    updateData.shootDate &&
-    (updateData.season === undefined || updateData.season === null || updateData.season === '')
-  ) {
-    updateData.season = await resolveSeasonForDate(updateData.shootDate);
+  if (Object.prototype.hasOwnProperty.call(req.body, 'workflowBooking')) {
+    sendResponse(
+      res,
+      400,
+      false,
+      'Workflow schedule links can only be managed by the booking workflow',
+    );
+    return;
   }
-  const schedule = await Schedule.findByIdAndUpdate(req.params.id, updateData, {
-    new: true,
-    runValidators: true,
-  });
-  if (!schedule) {
-    sendResponse(res, 404, false, 'Not found');
+  const updateData = { ...req.body };
+  delete updateData._id;
+  delete updateData.__v;
+  delete updateData.createdAt;
+  delete updateData.updatedAt;
+  const resourceFields = [
+    'customer',
+    'package',
+    'costumes',
+    'costumeReservations',
+    'shootDate',
+    'startTime',
+    'endTime',
+    'location',
+    'leadPhotographer',
+    'supportPhotographers',
+    'status',
+  ];
+  let prevSchedule: any;
+  let schedule: any;
+  const updateInTransaction = async (session?: ClientSession) => {
+    const existingQuery = Schedule.findById(req.params.id);
+    if (session) existingQuery.session(session);
+    const existing = await existingQuery;
+    if (!existing) throw new WorkflowProblem(404, 'Not found');
+    prevSchedule = existing.toObject();
+    if (existing.workflowBooking && resourceFields.some((field) => field in updateData)) {
+      throw new WorkflowProblem(
+        409,
+        'Workflow-linked schedules must be changed or cancelled through the booking workflow',
+      );
+    }
+    const proposed = { ...existing.toObject(), ...updateData };
+    if (
+      updateData.shootDate &&
+      (updateData.season === undefined || updateData.season === null || updateData.season === '')
+    ) {
+      updateData.season = await resolveSeasonForDate(updateData.shootDate);
+      proposed.season = updateData.season;
+    }
+    if (
+      'customer' in updateData &&
+      (!Types.ObjectId.isValid(proposed.customer) ||
+        !(await Customer.exists({ _id: proposed.customer }).session(session ?? null)))
+    ) {
+      throw new WorkflowProblem(400, 'Customer is required for a schedule');
+    }
+    if (session)
+      await ensureScheduleResourcesAvailable(proposed, session, existing._id as Types.ObjectId);
+    schedule = await Schedule.findByIdAndUpdate(req.params.id, updateData, {
+      new: true,
+      runValidators: true,
+      ...(session ? { session } : {}),
+    });
+  };
+  try {
+    if (workflowEnabled())
+      await withResourceTransaction(async (session) => updateInTransaction(session));
+    else await updateInTransaction();
+  } catch (error) {
+    sendScheduleProblem(res, error);
     return;
   }
   sendResponse(res, 200, true, 'Cập nhật thành công', schedule);
@@ -231,7 +528,9 @@ export const update = async (req: Request, res: Response): Promise<void> => {
           : null
         : prevLead;
 
-      const prevSupports = (prevSchedule.supportPhotographers ?? []).map((id) => id.toString());
+      const prevSupports = (prevSchedule.supportPhotographers ?? []).map((id: any) =>
+        id.toString(),
+      );
       const newSupports: string[] = supportsProvided
         ? req.body.supportPhotographers.map(String)
         : prevSupports;
@@ -248,7 +547,7 @@ export const update = async (req: Request, res: Response): Promise<void> => {
       const removedLead =
         prevLead && prevLead !== newLead && !newSupports.includes(prevLead) ? [prevLead] : [];
       const removedSupports = prevSupports.filter(
-        (id) => id !== newLead && !newSupports.includes(id),
+        (id: string) => id !== newLead && !newSupports.includes(id),
       );
       const removedIds = [...new Set([...removedLead, ...removedSupports])];
 
@@ -259,7 +558,6 @@ export const update = async (req: Request, res: Response): Promise<void> => {
           `📆 ${dateStr}${timeStr}${locationStr}`;
         await notifyUsers(addedIds, text);
       }
-
       if (removedIds.length) {
         const text =
           `🗑 <b>Bạn đã được gỡ khỏi lịch chụp</b>\n` +
@@ -319,8 +617,34 @@ export const remove = async (req: Request, res: Response): Promise<void> => {
     sendResponse(res, 404, false, 'Not found');
     return;
   }
-
-  await Schedule.findByIdAndDelete(req.params.id);
+  if (target.workflowBooking) {
+    sendResponse(
+      res,
+      409,
+      false,
+      'Workflow-linked schedules cannot be deleted through the legacy route',
+    );
+    return;
+  }
+  try {
+    if (workflowEnabled()) {
+      await withResourceTransaction(async (session) => {
+        const current = await Schedule.findById(req.params.id).session(session);
+        if (!current) throw new WorkflowProblem(404, 'Not found');
+        if (current.workflowBooking)
+          throw new WorkflowProblem(
+            409,
+            'Workflow-linked schedules cannot be deleted through the legacy route',
+          );
+        await Schedule.deleteOne({ _id: current._id }, { session });
+      });
+    } else {
+      await Schedule.findByIdAndDelete(req.params.id);
+    }
+  } catch (error) {
+    sendScheduleProblem(res, error);
+    return;
+  }
   sendResponse(res, 200, true, 'Đã xóa lịch chụp');
 
   // Dọn dẹp Google Drive + Sheet (chạy nền, không chặn response)
@@ -344,13 +668,40 @@ export const exportContract = async (req: Request, res: Response): Promise<void>
     return;
   }
 
+  let contractQuote = null;
+  if (schedule.workflowBooking) {
+    const version =
+      req.query.quoteVersion === undefined ? undefined : Number(req.query.quoteVersion);
+    if (version !== undefined && (!Number.isSafeInteger(version) || version < 1)) {
+      res.status(400).json({ message: 'Phiên bản báo giá không hợp lệ' });
+      return;
+    }
+    const workflow = (await BookingWorkflow.findOne({
+      booking: schedule.workflowBooking,
+    }).lean()) as Pick<IBookingWorkflow, 'quote' | 'quoteHistory'> | null;
+    contractQuote = selectAcceptedContractQuote(
+      workflow?.quote,
+      workflow?.quoteHistory ?? [],
+      version,
+    );
+    if (!contractQuote) {
+      res
+        .status(409)
+        .json({ message: 'Chưa có báo giá đã được khách chấp nhận cho phiên bản này' });
+      return;
+    }
+  }
   const customer = schedule.customer as unknown as ICustomer;
   const lead = schedule.leadPhotographer as unknown as IUser | null;
   const supports = (schedule.supportPhotographers as unknown as IUser[]) ?? [];
 
   const formatDate = (d: Date | string) => {
-    const date = new Date(d);
-    return `${String(date.getDate()).padStart(2, '0')}/${String(date.getMonth() + 1).padStart(2, '0')}/${date.getFullYear()}`;
+    return new Date(d).toLocaleDateString('vi-VN', {
+      timeZone: 'Asia/Ho_Chi_Minh',
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+    });
   };
 
   const doc = new PDFDocument({ size: 'A4', margin: 50 });
@@ -405,10 +756,10 @@ export const exportContract = async (req: Request, res: Response): Promise<void>
   doc.moveDown(0.3);
 
   const rows: [string, string][] = [
-    ['Ngày chụp', formatDate(schedule.shootDate)],
-    ['Giờ bắt đầu', schedule.startTime ?? '—'],
-    ['Giờ kết thúc', schedule.endTime ?? '—'],
-    ['Địa điểm', schedule.location ?? '—'],
+    ['Ngày chụp', formatDate(contractQuote?.proposedSchedule.shootDate ?? schedule.shootDate)],
+    ['Giờ bắt đầu', contractQuote?.proposedSchedule.startTime ?? schedule.startTime ?? '—'],
+    ['Giờ kết thúc', contractQuote?.proposedSchedule.endTime ?? schedule.endTime ?? '—'],
+    ['Địa điểm', contractQuote?.proposedSchedule.location ?? schedule.location ?? '—'],
     ['Thợ leader', lead ? (lead.name ?? lead.username) : '—'],
     ['Thợ support', supports.length ? supports.map((u) => u.name ?? u.username).join(', ') : '—'],
     ['Số lượng học sinh', String(customer?.total ?? '—')],
@@ -428,13 +779,15 @@ export const exportContract = async (req: Request, res: Response): Promise<void>
   // ── Terms ────────────────────────────────────────────────────────────────
   doc.font('Bold').fontSize(12).text('C. ĐIỀU KHOẢN HỢP ĐỒNG');
   doc.moveDown(0.3);
-  const terms = [
-    '1. Studio cam kết thực hiện đúng lịch chụp đã thoả thuận. Trường hợp bất khả kháng sẽ thông báo trước ít nhất 24 giờ.',
-    '2. Bên B cần xác nhận lịch chụp trước 48 giờ. Nếu huỷ sau thời hạn này, khoản đặt cọc sẽ không được hoàn lại.',
-    '3. Ảnh gốc sẽ được bàn giao sau khi bên B thanh toán đầy đủ.',
-    '4. Thời gian bàn giao ảnh chỉnh sửa: trong vòng 30 ngày làm việc kể từ ngày chụp.',
-    '5. Mọi tranh chấp phát sinh sẽ được giải quyết trên tinh thần thương lượng, hoà giải.',
-  ];
+  const terms = contractQuote
+    ? acceptedContractTerms(contractQuote)
+    : [
+        '1. Studio cam kết thực hiện đúng lịch chụp đã thoả thuận. Trường hợp bất khả kháng sẽ thông báo trước ít nhất 24 giờ.',
+        '2. Bên B cần xác nhận lịch chụp trước 48 giờ. Nếu huỷ sau thời hạn này, khoản đặt cọc sẽ không được hoàn lại.',
+        '3. Ảnh gốc sẽ được bàn giao sau khi bên B thanh toán đầy đủ.',
+        '4. Thời gian bàn giao ảnh chỉnh sửa: trong vòng 30 ngày làm việc kể từ ngày chụp.',
+        '5. Mọi tranh chấp phát sinh sẽ được giải quyết trên tinh thần thương lượng, hoà giải.',
+      ];
   for (const t of terms) {
     doc.font('Regular').fontSize(10).text(t, { width: 495 });
     doc.moveDown(0.3);

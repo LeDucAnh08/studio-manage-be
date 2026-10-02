@@ -81,7 +81,10 @@ export const handleWebhook = async (req: Request, res: Response): Promise<void> 
   const linkToken = parts[1];
 
   if (!linkToken) {
-    await sendMessage(telegramId, 'Chào bạn! Vui lòng mở ứng dụng quản lý studio và bấm <b>"Liên kết Telegram"</b> để bắt đầu.');
+    await sendMessage(
+      telegramId,
+      'Chào bạn! Vui lòng mở ứng dụng quản lý studio và bấm <b>"Liên kết Telegram"</b> để bắt đầu.',
+    );
     return;
   }
 
@@ -92,14 +95,20 @@ export const handleWebhook = async (req: Request, res: Response): Promise<void> 
   }).select('+telegramLinkToken +telegramLinkTokenExpiry name username');
 
   if (!user) {
-    await sendMessage(telegramId, '❌ Liên kết không hợp lệ hoặc đã hết hạn (15 phút).\nVui lòng tạo liên kết mới từ ứng dụng.');
+    await sendMessage(
+      telegramId,
+      '❌ Liên kết không hợp lệ hoặc đã hết hạn (15 phút).\nVui lòng tạo liên kết mới từ ứng dụng.',
+    );
     return;
   }
 
   // Kiểm tra telegramId đã được dùng bởi tài khoản khác chưa
   const conflict = await User.findOne({ telegramId, _id: { $ne: user._id } });
   if (conflict) {
-    await sendMessage(telegramId, '⚠️ Tài khoản Telegram này đã được liên kết với người dùng khác.\nVui lòng liên hệ quản trị viên.');
+    await sendMessage(
+      telegramId,
+      '⚠️ Tài khoản Telegram này đã được liên kết với người dùng khác.\nVui lòng liên hệ quản trị viên.',
+    );
     return;
   }
 

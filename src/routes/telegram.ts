@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { protect } from '../middleware/auth';
+import { requireRole } from '../middleware/role';
 import {
   generateLinkToken,
   unlinkTelegram,
@@ -11,6 +12,7 @@ const router = Router();
 
 // Webhook — Telegram gọi vào đây (không cần JWT)
 router.post('/webhook', handleWebhook);
+router.use(protect, requireRole(0, 1, 2, 3, 4, 5));
 
 // Các endpoint yêu cầu đăng nhập
 router.get('/status', protect, getTelegramStatus);

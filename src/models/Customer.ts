@@ -12,6 +12,7 @@ export interface ICustomer extends Document {
   notes?: string;
   createdBy?: Types.ObjectId;
   season?: Types.ObjectId | null;
+  publicAccessToken?: string;
 }
 
 const customerSchema = new Schema<ICustomer>(
@@ -27,6 +28,7 @@ const customerSchema = new Schema<ICustomer>(
     notes: { type: String },
     createdBy: { type: Schema.Types.ObjectId, ref: 'User' },
     season: { type: Schema.Types.ObjectId, ref: 'Season', default: null },
+    publicAccessToken: { type: String, select: false, index: true },
   },
   { timestamps: true },
 );

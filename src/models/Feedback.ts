@@ -15,6 +15,9 @@ export interface IFeedback extends Document {
   isRead: boolean;
   createdAt: Date;
   updatedAt: Date;
+  workflowBooking?: Types.ObjectId;
+  rating?: number;
+  comment?: string;
 }
 
 const feedbackItemSchema = new Schema<IFeedbackItem>(
@@ -29,8 +32,11 @@ const feedbackSchema = new Schema<IFeedback>(
   {
     customer: { type: Schema.Types.ObjectId, ref: 'Customer' },
     phone: { type: String, trim: true },
-    crewFeedback: { type: feedbackItemSchema, required: true },
-    albumFeedback: { type: feedbackItemSchema, required: true },
+    crewFeedback: { type: feedbackItemSchema },
+    albumFeedback: { type: feedbackItemSchema },
+    workflowBooking: { type: Schema.Types.ObjectId, ref: 'Booking', unique: true, sparse: true },
+    rating: { type: Number, min: 1, max: 5 },
+    comment: { type: String, trim: true },
     content: { type: String, trim: true },
     suggestion: { type: String, trim: true },
     isRead: { type: Boolean, default: false },

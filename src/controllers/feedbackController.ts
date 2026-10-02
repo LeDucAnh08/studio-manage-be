@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import Feedback from '../models/Feedback';
 import type { FeedbackResponse } from '../types/dto';
 import { sendResponse } from '../utils/response';
+import Customer from '../models/Customer';
 
 export const getAll = async (req: Request, res: Response): Promise<void> => {
   const { page = '1', limit = '20', isRead } = req.query as Record<string, string>;
@@ -44,6 +45,11 @@ export const markRead = async (req: Request, res: Response): Promise<void> => {
 };
 
 export const remove = async (req: Request, res: Response): Promise<void> => {
+  const linked = await Feedback.findById(req.params.id).select('workflowBooking').lean();
+  if (linked?.workflowBooking) {
+    sendResponse(res, 409, false, 'Booking feedback cannot be deleted through the legacy route');
+    return;
+  }
   const feedback = await Feedback.findByIdAndDelete(req.params.id);
   if (!feedback) {
     sendResponse(res, 404, false, 'Not found');
@@ -54,7 +60,15 @@ export const remove = async (req: Request, res: Response): Promise<void> => {
 
 // Public: submit feedback
 export const submit = async (req: Request, res: Response): Promise<void> => {
-  const { customer, phone, crewFeedback, albumFeedback, content, suggestion } = req.body;
+  const { customer, access, phone, crewFeedback, albumFeedback, content, suggestion } = req.body;
+
+  if (customer) {
+    const matchedCustomer = await Customer.findById(customer).select('+publicAccessToken');
+    if (!matchedCustomer?.publicAccessToken || matchedCustomer.publicAccessToken !== access) {
+      sendResponse(res, 404, false, 'Không tìm thấy form hoặc link không hợp lệ');
+      return;
+    }
+  }
 
   const crewRating = Number(crewFeedback?.rating);
   const albumRating = Number(albumFeedback?.rating);

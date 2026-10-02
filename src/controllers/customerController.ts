@@ -2,6 +2,14 @@ import { Request, Response } from 'express';
 import Customer from '../models/Customer';
 import { resolveCurrentSeason } from '../utils/seasonCache';
 import { sendResponse } from '../utils/response';
+import crypto from 'crypto';
+import BookingWorkflow from '../models/BookingWorkflow';
+import Schedule from '../models/Schedule';
+import {
+  withResourceTransaction,
+  WorkflowProblem,
+  workflowEnabled,
+} from '../services/workflowTransactions';
 
 export const getAll = async (req: Request, res: Response): Promise<void> => {
   const { search, page = '1', limit = '20', season } = req.query as Record<string, string>;
@@ -34,7 +42,12 @@ export const create = async (req: Request, res: Response): Promise<void> => {
 };
 
 export const update = async (req: Request, res: Response): Promise<void> => {
-  const customer = await Customer.findByIdAndUpdate(req.params.id, req.body, {
+  const updateData = { ...req.body };
+  delete updateData.publicAccessToken;
+  delete updateData.createdBy;
+  delete updateData._id;
+  delete updateData.__v;
+  const customer = await Customer.findByIdAndUpdate(req.params.id, updateData, {
     new: true,
     runValidators: true,
   }).lean();
@@ -46,10 +59,52 @@ export const update = async (req: Request, res: Response): Promise<void> => {
 };
 
 export const remove = async (req: Request, res: Response): Promise<void> => {
-  const customer = await Customer.findByIdAndDelete(req.params.id);
+  let customer: any;
+  const removeCustomer = async (session?: any) => {
+    const bookingQuery = BookingWorkflow.exists({ customer: req.params.id });
+    const scheduleQuery = Schedule.exists({ customer: req.params.id });
+    if (session) {
+      bookingQuery.session(session);
+      scheduleQuery.session(session);
+    }
+    if ((await bookingQuery) || (await scheduleQuery))
+      throw new WorkflowProblem(
+        409,
+        'This customer is linked to a booking or schedule and cannot be deleted',
+      );
+    const query = Customer.findByIdAndDelete(req.params.id);
+    if (session) query.session(session);
+    customer = await query;
+  };
+  try {
+    if (workflowEnabled())
+      await withResourceTransaction(async (session) => removeCustomer(session));
+    else await removeCustomer();
+  } catch (error) {
+    const problem = error as WorkflowProblem;
+    sendResponse(res, problem.status ?? 500, false, problem.message ?? 'Internal server error');
+    return;
+  }
   if (!customer) {
     sendResponse(res, 404, false, 'Not found');
     return;
   }
   sendResponse(res, 200, true, 'Đã xóa khách hàng');
+};
+
+export const getPublicLink = async (req: Request, res: Response): Promise<void> => {
+  const customer = await Customer.findById(req.params.id).select('+publicAccessToken');
+  if (!customer) {
+    sendResponse(res, 404, false, 'Not found');
+    return;
+  }
+  if (await BookingWorkflow.exists({ customer: customer._id })) {
+    sendResponse(res, 409, false, 'Use the booking member intake link for this customer');
+    return;
+  }
+  if (!customer.publicAccessToken) {
+    customer.publicAccessToken = crypto.randomBytes(24).toString('hex');
+    await customer.save();
+  }
+  sendResponse(res, 200, true, 'OK', { token: customer.publicAccessToken });
 };

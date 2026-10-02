@@ -7,7 +7,7 @@
  * receives a consistent, strict shape.
  */
 
-export type UserRole = 0 | 1 | 2 | 3 | 4 | 5;
+export type UserRole = 0 | 1 | 2 | 3 | 4 | 5 | 6;
 
 export interface UserDto {
   _id: string;
@@ -218,7 +218,6 @@ export interface DashboardStats {
   showSchedules: boolean;
   upcomingSchedules: UpcomingScheduleDto[];
 }
-
 
 // Season DTOs
 export interface SeasonDto {

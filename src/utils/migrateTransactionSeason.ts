@@ -20,14 +20,16 @@ const migrate = async (): Promise<void> => {
 
   console.log(`Tìm thấy ${seasons.length} mùa chụp:`);
   for (const s of seasons) {
-    console.log(`  • ${s.name}: ${s.startDate.toISOString().slice(0, 10)} → ${s.endDate.toISOString().slice(0, 10)}`);
+    console.log(
+      `  • ${s.name}: ${s.startDate.toISOString().slice(0, 10)} → ${s.endDate.toISOString().slice(0, 10)}`,
+    );
   }
 
   let totalUpdated = 0;
   let totalSkipped = 0;
 
   for (const season of seasons) {
-    console.log("🚀 ~ migrate ~ season:", season)
+    console.log('🚀 ~ migrate ~ season:', season);
     const result = await Transaction.updateMany(
       {
         date: { $gte: season.startDate, $lte: season.endDate },

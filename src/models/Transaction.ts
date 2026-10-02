@@ -10,6 +10,8 @@ export interface ITransaction extends Document {
   createdBy?: Types.ObjectId;
   accountantRefunded: boolean;
   season?: Types.ObjectId | null;
+  workflowBooking?: Types.ObjectId;
+  workflowPayment?: Types.ObjectId;
 }
 
 const transactionSchema = new Schema<ITransaction>(
@@ -23,6 +25,8 @@ const transactionSchema = new Schema<ITransaction>(
     createdBy: { type: Schema.Types.ObjectId, ref: 'User' },
     accountantRefunded: { type: Boolean, default: false },
     season: { type: Schema.Types.ObjectId, ref: 'Season', default: null },
+    workflowBooking: { type: Schema.Types.ObjectId, ref: 'Booking', index: true },
+    workflowPayment: { type: Schema.Types.ObjectId, ref: 'BookingWorkflow' },
   },
   { timestamps: true },
 );
@@ -33,5 +37,6 @@ transactionSchema.index({ type: 1 });
 transactionSchema.index({ season: 1 });
 transactionSchema.index({ createdBy: 1, date: 1 });
 transactionSchema.index({ season: 1, date: 1 });
+transactionSchema.index({ workflowBooking: 1, workflowPayment: 1 }, { unique: true, sparse: true });
 
 export default mongoose.model<ITransaction>('Transaction', transactionSchema);

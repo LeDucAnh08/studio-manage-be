@@ -3,10 +3,7 @@ import Season from '../models/Season';
 import { clearSeasonCache } from '../utils/seasonCache';
 import { sendResponse } from '../utils/response';
 
-export const getAll = async (
-  _req: Request,
-  res: Response,
-): Promise<void> => {
+export const getAll = async (_req: Request, res: Response): Promise<void> => {
   const seasons = await Season.find();
   sendResponse(res, 200, true, 'OK', seasons);
 };

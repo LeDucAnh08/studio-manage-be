@@ -47,7 +47,9 @@ export async function notifyUsers(userIds: string[], text: string): Promise<void
   })
     .select('telegramId')
     .lean();
-  await Promise.all(users.map((u) => (u.telegramId ? sendMessage(u.telegramId, text) : Promise.resolve())));
+  await Promise.all(
+    users.map((u) => (u.telegramId ? sendMessage(u.telegramId, text) : Promise.resolve())),
+  );
 }
 
 /**
@@ -61,5 +63,7 @@ export async function notifyByRoles(roles: number[], text: string): Promise<void
   })
     .select('telegramId')
     .lean();
-  await Promise.all(users.map((u) => (u.telegramId ? sendMessage(u.telegramId, text) : Promise.resolve())));
+  await Promise.all(
+    users.map((u) => (u.telegramId ? sendMessage(u.telegramId, text) : Promise.resolve())),
+  );
 }

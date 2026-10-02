@@ -10,7 +10,7 @@ import Season from '../models/Season';
 
 const migrate = async (): Promise<void> => {
   await mongoose.connect(process.env.MONGO_URI_PROD as string);
-  console.log('Connected to MongoDB', process.env.MONGO_URI_PROD );
+  console.log('Connected to MongoDB', process.env.MONGO_URI_PROD);
 
   const seasons = await Season.find({}).sort({ startDate: 1 });
   if (seasons.length === 0) {
@@ -58,7 +58,9 @@ const migrate = async (): Promise<void> => {
     updated++;
   }
 
-  console.log(`\n✅ Hoàn tất: ${updated} lớp đã gán mùa, ${skipped} bỏ qua (không có lịch chụp hoặc ngày chụp ngoài tất cả mùa)`);
+  console.log(
+    `\n✅ Hoàn tất: ${updated} lớp đã gán mùa, ${skipped} bỏ qua (không có lịch chụp hoặc ngày chụp ngoài tất cả mùa)`,
+  );
 
   await mongoose.disconnect();
   console.log('Disconnected');
