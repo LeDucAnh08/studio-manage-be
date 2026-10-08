@@ -67,3 +67,19 @@ export const withResourceTransaction = async <T>(
 
 export const workflowEnabled = (): boolean =>
   process.env.CLIENT_WORKFLOW_ENABLED?.toLowerCase() === 'true';
+
+// Disabling workflow writes must not let legacy writes bypass existing holds.
+export const resourceTransactionsRequired = async (): Promise<boolean> =>
+  workflowEnabled() ||
+  process.env.CLIENT_RENTAL_ENABLED?.toLowerCase() === 'true' ||
+  (mongoose.connection.readyState === 1 &&
+    (!!(await mongoose.connection
+      .collection('rentalorders')
+      .findOne({ status: { $in: ['confirmed', 'checked_out'] } }, { projection: { _id: 1 } })) ||
+      !!(await mongoose.connection.collection('schedules').findOne(
+        {
+          workflowBooking: { $exists: true, $ne: null },
+          status: { $in: ['pending', 'confirmed', 'completed'] },
+        },
+        { projection: { _id: 1 } },
+      ))));

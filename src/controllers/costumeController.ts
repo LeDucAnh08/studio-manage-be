@@ -5,11 +5,13 @@ import { sendResponse } from '../utils/response';
 import { readCostumeCatalogFilters, readCostumeInput } from '../utils/costumeInput';
 import Schedule from '../models/Schedule';
 import BookingWorkflow from '../models/BookingWorkflow';
+import RentalOrder from '../models/RentalOrder';
+import { ensureRentalStockPreserved } from '../services/rentalAvailability';
 import { Types } from 'mongoose';
 import {
   withResourceTransaction,
   WorkflowProblem,
-  workflowEnabled,
+  resourceTransactionsRequired,
 } from '../services/workflowTransactions';
 
 const goodQuantity = (inventory: Array<any>, size: string): number =>
@@ -32,6 +34,7 @@ const ensureCostumeChangePreservesReservations = async (
     value.inventory !== undefined &&
     JSON.stringify(old.inventory ?? []) !== JSON.stringify(value.inventory);
   if (!typeChanged && !inventoryChanged) return;
+  if (inventoryChanged) await ensureRentalStockPreserved(id, value.inventory, session);
   const schedules = (await Schedule.find({
     costumes: id,
     status: { $in: ['pending', 'confirmed', 'completed'] },
@@ -129,7 +132,7 @@ export const create = async (req: Request, res: Response): Promise<void> => {
     return;
   }
   let costume: any;
-  if (workflowEnabled()) {
+  if (await resourceTransactionsRequired()) {
     try {
       await withResourceTransaction(async (session) => {
         [costume] = await Costume.create([input.value], { session });
@@ -152,7 +155,7 @@ export const update = async (req: Request, res: Response): Promise<void> => {
   }
   let costume: any;
   try {
-    if (workflowEnabled()) {
+    if (await resourceTransactionsRequired()) {
       await withResourceTransaction(async (session) => {
         if (!Types.ObjectId.isValid(req.params.id)) throw new WorkflowProblem(404, 'Not found');
         await ensureCostumeChangePreservesReservations(
@@ -274,11 +277,18 @@ export const remove = async (req: Request, res: Response): Promise<void> => {
           { 'members.costumeSizes.costumeId': current._id },
         ],
       });
+      const rentalQuery = RentalOrder.exists({
+        $or: [
+          { 'requestedLines.costumeId': current._id },
+          { 'quote.lines.costumeId': current._id },
+        ],
+      });
       if (session) {
         scheduleQuery.session(session);
         workflowQuery.session(session);
+        rentalQuery.session(session);
       }
-      if ((await scheduleQuery) || (await workflowQuery))
+      if ((await scheduleQuery) || (await workflowQuery) || (await rentalQuery))
         throw new WorkflowProblem(
           409,
           'Trang phục đang được lịch hoặc booking tham chiếu nên không thể xóa',
@@ -289,7 +299,7 @@ export const remove = async (req: Request, res: Response): Promise<void> => {
       await deleteQuery;
       return current;
     };
-    if (workflowEnabled())
+    if (await resourceTransactionsRequired())
       await withResourceTransaction(async (session) => {
         await removeInTransaction(session);
       });

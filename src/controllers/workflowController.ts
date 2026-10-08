@@ -17,6 +17,7 @@ import {
   workflowEnabled,
 } from '../services/workflowTransactions';
 import { sendResponse } from '../utils/response';
+import { rentalReservations, rentalUsed } from '../services/rentalAvailability';
 
 type Actor = NonNullable<Request['user']>;
 type ActionBody = Record<string, any> & { action?: string; expectedVersion?: number };
@@ -638,9 +639,10 @@ const validateResources = async (
     })
       .session(session)
       .lean()) as any[];
+    const rentals = await rentalReservations(costumeId, session);
     for (let day = item.receiveDate.getTime(); day <= item.returnDate.getTime(); day += 86400000) {
       const date = new Date(day);
-      let used = 0;
+      let used = rentalUsed(rentals, costumeId, item.size, date);
       for (const row of reservations) {
         const forCostume = (row.costumeReservations ?? []).filter(
           (entry: any) => String(entry.costume) === costumeId,
@@ -1197,6 +1199,21 @@ const runAction = async (
         };
         if (!workflow.resources.schedule || !allowed[workflow.lifecycle]?.includes(nextStatus))
           throw new WorkflowProblem(409, 'Progress update does not follow the current lifecycle');
+        if (nextStatus === 'shooting') {
+          await validateResources(
+            booking,
+            {
+              shootDate: workflow.quote!.proposedSchedule.shootDate,
+              startTime: workflow.quote!.proposedSchedule.startTime,
+              endTime: workflow.quote!.proposedSchedule.endTime,
+              location: workflow.quote!.proposedSchedule.location,
+              photographerIds: workflow.resources.photographers.map(String),
+            },
+            workflow.resources.costumes as any,
+            session,
+            workflow.resources.schedule as Types.ObjectId,
+          );
+        }
         workflow.progress.status = nextStatus;
         if (nextStatus === 'delivered') {
           const deliveryUrl = safeUrl(body.deliveryUrl);

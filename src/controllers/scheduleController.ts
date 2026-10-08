@@ -16,7 +16,8 @@ import { sendResponse } from '../utils/response';
 import Costume from '../models/Costume';
 import { ClientSession, Types } from 'mongoose';
 import { withResourceTransaction, WorkflowProblem } from '../services/workflowTransactions';
-import { workflowEnabled } from '../services/workflowTransactions';
+import { resourceTransactionsRequired } from '../services/workflowTransactions';
+import { rentalReservations, rentalUsed } from '../services/rentalAvailability';
 
 interface ScheduleQuery {
   customer?: string;
@@ -196,13 +197,14 @@ const ensureScheduleResourcesAvailable = async (
       })
         .session(session)
         .lean()) as any[];
+      const rentals = await rentalReservations(entry.costumeId, session);
       for (
         let day = entry.receiveDate.getTime();
         day <= entry.returnDate.getTime();
         day += 86400000
       ) {
         const currentDay = new Date(day);
-        let used = 0;
+        let used = rentalUsed(rentals, entry.costumeId, size, currentDay);
         for (const row of existing) {
           const matching = (row.costumeReservations ?? []).filter(
             (item: any) => String(item.costume) === entry.costumeId,
@@ -332,7 +334,7 @@ export const create = async (req: Request, res: Response): Promise<void> => {
     return;
   }
   let schedule: any;
-  if (workflowEnabled()) {
+  if (await resourceTransactionsRequired()) {
     try {
       await withResourceTransaction(async (session) => {
         if (!(await Customer.exists({ _id: payload.customer }).session(session)))
@@ -488,7 +490,7 @@ export const update = async (req: Request, res: Response): Promise<void> => {
     });
   };
   try {
-    if (workflowEnabled())
+    if (await resourceTransactionsRequired())
       await withResourceTransaction(async (session) => updateInTransaction(session));
     else await updateInTransaction();
   } catch (error) {
@@ -627,7 +629,7 @@ export const remove = async (req: Request, res: Response): Promise<void> => {
     return;
   }
   try {
-    if (workflowEnabled()) {
+    if (await resourceTransactionsRequired()) {
       await withResourceTransaction(async (session) => {
         const current = await Schedule.findById(req.params.id).session(session);
         if (!current) throw new WorkflowProblem(404, 'Not found');

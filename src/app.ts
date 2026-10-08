@@ -21,6 +21,8 @@ import dashboardRoutes from './routes/dashboard';
 import accountRequestRoutes from './routes/accountRequests';
 import bookingRoutes from './routes/bookings';
 import workflowRoutes from './routes/workflows';
+import rentalRoutes from './routes/rentals';
+import reportRoutes from './routes/reports';
 
 const envFile = '.env';
 dotenv.config({ path: path.resolve(__dirname, '..', envFile) });
@@ -51,6 +53,7 @@ app.use(express.json({ limit: '100kb' }));
 app.use('/api/auth', authRoutes);
 app.use('/api/account-requests', accountRequestRoutes);
 app.use('/api/workflows', workflowRoutes);
+app.use('/api/rentals', rentalRoutes);
 app.use('/api/bookings', bookingRoutes);
 app.use('/api/customers', customerRoutes);
 app.use('/api/schedules', scheduleRoutes);
@@ -66,6 +69,7 @@ app.use('/api/feedbacks', feedbackRoutes);
 app.use('/api/telegram', telegramRoutes);
 app.use('/api/seasons', seasonController);
 app.use('/api/dashboard', dashboardRoutes);
+app.use('/api/reports', reportRoutes);
 
 app.get('/api/health', (_req, res) => res.json({ status: 'ok' }));
 
