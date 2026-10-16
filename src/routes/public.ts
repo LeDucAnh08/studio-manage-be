@@ -36,7 +36,7 @@ router.get('/packages', async (_req: Request, res: Response): Promise<void> => {
   sendResponse(res, 200, true, 'OK', packages);
 });
 
-// Public rental catalog. Availability is informational and is not checked against dates.
+// Public catalog requires receiveDate/returnDate; confirmation rechecks availability atomically.
 router.get('/costumes', costumeController.getPublicCatalog);
 router.get('/costume-types', costumeController.getPublicCatalogCategories);
 

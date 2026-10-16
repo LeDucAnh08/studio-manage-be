@@ -6,7 +6,12 @@ import { readCostumeCatalogFilters, readCostumeInput } from '../utils/costumeInp
 import Schedule from '../models/Schedule';
 import BookingWorkflow from '../models/BookingWorkflow';
 import RentalOrder from '../models/RentalOrder';
-import { ensureRentalStockPreserved } from '../services/rentalAvailability';
+import {
+  ensureRentalStockPreserved,
+  getRentalAvailability,
+  loadRentalHolds,
+} from '../services/rentalAvailability';
+import { readRentalPeriod } from '../utils/rentalPeriod';
 import { Types } from 'mongoose';
 import {
   withResourceTransaction,
@@ -193,6 +198,13 @@ export const update = async (req: Request, res: Response): Promise<void> => {
 };
 
 export const getPublicCatalog = async (req: Request, res: Response): Promise<void> => {
+  let period: ReturnType<typeof readRentalPeriod>;
+  try {
+    period = readRentalPeriod(req.query.receiveDate, req.query.returnDate);
+  } catch (error) {
+    sendCostumeProblem(res, error);
+    return;
+  }
   const parsed = readCostumeCatalogFilters(req.query);
   if (!parsed.ok) {
     sendResponse(res, 400, false, parsed.error);
@@ -214,35 +226,42 @@ export const getPublicCatalog = async (req: Request, res: Response): Promise<voi
   const price: Record<string, number> = {};
   if (parsed.value.minPrice !== undefined) price.$gte = parsed.value.minPrice;
   if (parsed.value.maxPrice !== undefined) price.$lte = parsed.value.maxPrice;
-  if (Object.keys(price).length) filter.rentalPrice = price;
+  if (Object.keys(price).length) filter.rentalDailyPrice = { ...price, $gt: 0 };
 
   const costumes = await Costume.find(filter)
-    .select('name description gender itemKind rentalPrice type inventory')
+    .select('name description gender itemKind rentalPrice rentalDailyPrice type inventory')
     .populate('type', 'name')
     .sort({ name: 1 })
     .lean();
 
-  // Only return catalog details. Per-size quantities and internal condition are not public.
-  const catalog = costumes.map((costume) => {
+  const { orders, schedules } = await loadRentalHolds(
+    costumes.map((costume) => String(costume._id)),
+  );
+  // Availability is public; reservation identities and internal inventory condition stay private.
+  const catalog = costumes.flatMap((costume) => {
     const type = costume.type as unknown as { _id?: unknown; name?: string } | null;
-    const sizes = Array.from(
-      new Set(
-        (costume.inventory ?? [])
-          .filter((entry) => entry.condition === 'good' && entry.quantity > 0)
-          .map((entry) => entry.size),
-      ),
-    ).sort();
-    return {
-      _id: String(costume._id),
-      name: costume.name,
-      description: costume.description,
-      gender: costume.gender,
-      itemKind: costume.itemKind ?? 'clothing',
-      categoryId: type?._id ? String(type._id) : null,
-      category: type?.name ?? null,
-      rentalPrice: costume.rentalPrice ?? 0,
-      sizes,
-    };
+    const availableBySize = getRentalAvailability(costume, period, orders, schedules);
+    const sizes = Object.keys(availableBySize).sort();
+    if (!sizes.length || (parsed.value.size && !availableBySize[parsed.value.size])) return [];
+    return [
+      {
+        _id: String(costume._id),
+        name: costume.name,
+        description: costume.description,
+        gender: costume.gender,
+        itemKind: costume.itemKind ?? 'clothing',
+        categoryId: type?._id ? String(type._id) : null,
+        category: type?.name ?? null,
+        rentalPrice: costume.rentalPrice ?? 0,
+        rentalDailyPrice:
+          Number.isSafeInteger(costume.rentalDailyPrice) && (costume.rentalDailyPrice ?? 0) > 0
+            ? costume.rentalDailyPrice
+            : null,
+        rentalDays: period.rentalDays,
+        availableBySize,
+        sizes,
+      },
+    ];
   });
   sendResponse(res, 200, true, 'OK', catalog);
 };

@@ -8,6 +8,7 @@ import Transaction from '../models/Transaction';
 import { sendResponse } from '../utils/response';
 import { withResourceTransaction, WorkflowProblem } from '../services/workflowTransactions';
 import { ensureRentalAvailability, vietnamDay } from '../services/rentalAvailability';
+import { readRentalPeriod, rentalDays } from '../utils/rentalPeriod';
 
 const roles = (req: Request, ...allowed: number[]) =>
   req.user!.roles.some((role) => allowed.includes(role));
@@ -36,32 +37,12 @@ const text = (value: unknown, max: number, required = false): string => {
   return result;
 };
 const dates = (receive: unknown, returned: unknown, future = true) => {
-  const read = (value: unknown) => {
-    assert(
-      typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value),
-      'Ngày phải theo định dạng YYYY-MM-DD.',
-      400,
-    );
-    const result = new Date(`${value}T00:00:00+07:00`);
-    assert(
-      Number.isFinite(result.getTime()) &&
-        new Date(result.getTime() + 25200000).toISOString().slice(0, 10) === value,
-      'Ngày không hợp lệ.',
-      400,
-    );
-    return result;
-  };
-  const receiveDate = read(receive),
-    returnDate = read(returned);
-  assert(
-    (!future || receiveDate >= vietnamDay(new Date())) &&
-      returnDate >= receiveDate &&
-      returnDate.getTime() - receiveDate.getTime() <= 365 * 86400000,
-    'Kỳ thuê phải từ hôm nay, tối đa 366 ngày.',
-    400,
-  );
+  const { receiveDate, returnDate } = readRentalPeriod(receive, returned, future);
+  // Keep the creation fingerprint compatible with requests made before daily pricing.
   return { receiveDate, returnDate };
 };
+const feeFor = (lines: Array<{ quantity: number; unitPrice?: number }>, days = 1) =>
+  integer(lines.reduce((sum, line) => sum + line.quantity * integer(line.unitPrice) * days, 0));
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const key = (req: Request) => {
   const value = req.get('Idempotency-Key');
@@ -113,6 +94,8 @@ const dto = (order: any, req: Request) => {
     _id: order._id,
     version: order.version,
     status: order.status,
+    pricingMode: order.pricingMode,
+    reservationIssue: order.reservationIssue,
     contactName: order.contactName,
     phone: roles(req, 5) && !roles(req, 0, 1, 2, 4, 6) ? undefined : order.phone,
     note: order.note,
@@ -173,7 +156,12 @@ const respondProblem = (res: Response, error: unknown) => {
     problem.status ? problem.message : 'Không thể xử lý đơn thuê.',
   );
 };
-const readLines = async (input: unknown, session: ClientSession, quoted: boolean) => {
+const readLines = async (
+  input: unknown,
+  session: ClientSession,
+  quoted: boolean,
+  daily = false,
+) => {
   assert(
     Array.isArray(input) && input.length >= 1 && input.length <= 30,
     'Cần 1–30 dòng trang phục/phụ kiện.',
@@ -201,7 +189,11 @@ const readLines = async (input: unknown, session: ClientSession, quoted: boolean
       name: costume!.name,
       size,
       quantity: integer(value.quantity, 1, 10000),
-      unitPrice: quoted ? integer(value.unitPrice) : (costume!.rentalPrice ?? 0),
+      unitPrice: quoted
+        ? integer(value.unitPrice, daily ? 1 : 0)
+        : daily
+          ? (costume!.rentalDailyPrice ?? undefined)
+          : (costume!.rentalPrice ?? 0),
     });
   }
   return result;
@@ -215,6 +207,37 @@ const completeIfSettled = (order: any) => {
     net(order) === order.settlement.total
   )
     order.status = 'completed';
+};
+
+const confirmPaidDailyRental = async (order: any, req: Request, session: ClientSession) => {
+  if (
+    order.pricingMode !== 'daily' ||
+    order.status !== 'ready_to_confirm' ||
+    !order.quote?.acceptedAt ||
+    net(order) < order.quote.deposit ||
+    ['requested', 'proposed'].includes(order.change?.status)
+  )
+    return;
+  try {
+    assert(
+      order.quote.receiveDate >= vietnamDay(new Date()),
+      'Ngày nhận đã qua; cần thỏa thuận lại.',
+    );
+    await ensureRentalAvailability(order.quote, session, String(order._id));
+    order.status = 'confirmed';
+    order.reservationIssue = undefined;
+    event(order, req, 'resources.confirm', 'Đã giữ hàng sau khi xác nhận thuê và nhận đủ cọc.');
+  } catch (error) {
+    if (!(error instanceof WorkflowProblem) || error.status !== 409) throw error;
+    // A real receipt must survive an availability conflict; staff resolves or refunds it.
+    order.reservationIssue = error.message;
+    event(
+      order,
+      req,
+      'resources.unavailable',
+      'Đã nhận cọc nhưng chưa giữ được hàng. Studio cần xử lý: ' + error.message,
+    );
+  }
 };
 
 export const createRental = async (req: Request, res: Response): Promise<void> => {
@@ -251,7 +274,8 @@ export const createRental = async (req: Request, res: Response): Promise<void> =
         return;
       }
       assert(input.receiveDate >= vietnamDay(new Date()), 'Ngày nhận phải từ hôm nay.', 400);
-      const lines = await readLines(req.body.lines, session, false);
+      const lines = await readLines(req.body.lines, session, false, true);
+      await ensureRentalAvailability({ lines, ...input }, session);
       [result] = await RentalOrder.create(
         [
           {
@@ -261,6 +285,7 @@ export const createRental = async (req: Request, res: Response): Promise<void> =
             contactName: input.contactName,
             phone: input.phone,
             note: input.note,
+            pricingMode: 'daily',
             requestedLines: lines,
             requestedReceiveDate: input.receiveDate,
             requestedReturnDate: input.returnDate,
@@ -381,9 +406,11 @@ export const actRental = async (req: Request, res: Response): Promise<void> => {
             ['requested', 'quoting'].includes(order.status),
             'Không thể thay báo giá đã được đồng ý.',
           );
-          const lines = await readLines(body.lines, session, true);
-          const fee = lines.reduce((sum, row) => sum + row.quantity * row.unitPrice, 0);
-          integer(fee);
+          const daily = order.pricingMode === 'daily';
+          const lines = await readLines(body.lines, session, true, daily);
+          const period = dates(body.receiveDate, body.returnDate);
+          const days = rentalDays(period.receiveDate, period.returnDate);
+          const fee = feeFor(lines, daily ? days : 1);
           const deposit = integer(body.deposit);
           integer(fee + deposit);
           assert(
@@ -395,7 +422,9 @@ export const actRental = async (req: Request, res: Response): Promise<void> => {
           order.quote = {
             version: (quote?.version ?? 0) + 1,
             lines,
-            ...dates(body.receiveDate, body.returnDate),
+            ...period,
+            pricingMode: daily ? 'daily' : 'period',
+            ...(daily ? { rentalDays: days } : {}),
             fee,
             deposit,
             terms: body.terms.map((term: unknown) => text(term, 1000, true)),
@@ -454,6 +483,7 @@ export const actRental = async (req: Request, res: Response): Promise<void> => {
           );
           await ensureRentalAvailability(quote, session, String(order._id));
           order.status = 'confirmed';
+          order.reservationIssue = undefined;
           break;
         case 'payment.record': {
           assert(
@@ -704,7 +734,10 @@ export const actRental = async (req: Request, res: Response): Promise<void> => {
             'Chưa có yêu cầu thay đổi.',
           );
           if (order.change.status === 'proposed') order.changeHistory.push(order.change.toObject());
-          order.change.finalFee = integer(body.finalFee);
+          order.change.finalFee =
+            quote.pricingMode === 'daily' && order.change.kind === 'extend'
+              ? feeFor(quote.lines, rentalDays(quote.receiveDate, order.change.returnDate))
+              : integer(body.finalFee);
           assert(
             order.change.kind === 'cancel'
               ? order.change.finalFee <= quote.fee
@@ -725,11 +758,19 @@ export const actRental = async (req: Request, res: Response): Promise<void> => {
             'Đề xuất thay đổi đã thay đổi.',
           );
           if (order.change.kind === 'extend') {
+            const days = rentalDays(quote.receiveDate, order.change.returnDate);
+            const daily = quote.pricingMode === 'daily';
+            const nextFee = daily ? feeFor(quote.lines, days) : order.change.finalFee;
+            assert(
+              !daily || nextFee === order.change.finalFee,
+              'Giá gia hạn đã thay đổi; cần đề xuất mới.',
+            );
             const next = {
               ...quote.toObject(),
               version: quote.version + 1,
               returnDate: order.change.returnDate,
-              fee: order.change.finalFee,
+              fee: nextFee,
+              ...(daily ? { rentalDays: days } : {}),
               terms: [...quote.terms, ...order.change.terms],
               acceptedAt: new Date(),
               proposedAt: order.change.at,
@@ -772,6 +813,7 @@ export const actRental = async (req: Request, res: Response): Promise<void> => {
           };
           break;
       }
+      await confirmPaidDailyRental(order, req, session);
       const messages: Record<string, string> = {
         'quote.propose': 'Studio gửi báo giá thuê.',
         reject: 'Studio từ chối yêu cầu.',

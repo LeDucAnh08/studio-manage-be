@@ -6,13 +6,15 @@ const line = new Schema(
     name: { type: String, required: true },
     size: { type: String, required: true },
     quantity: { type: Number, required: true },
-    unitPrice: { type: Number, required: true },
+    unitPrice: { type: Number, min: 0 },
   },
   { _id: false },
 );
 const quote = new Schema(
   {
     version: Number,
+    pricingMode: { type: String, enum: ['daily', 'period'] },
+    rentalDays: Number,
     lines: [line],
     receiveDate: Date,
     returnDate: Date,
@@ -38,6 +40,8 @@ const schema = new Schema(
   {
     client: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     version: { type: Number, default: 0 },
+    pricingMode: { type: String, enum: ['daily', 'period'] },
+    reservationIssue: String,
     creationKey: { type: String, required: true },
     creationFingerprint: { type: String, required: true },
     contactName: String,

@@ -8,6 +8,7 @@ export interface ICostume extends Document {
   itemKind: 'clothing' | 'accessory';
   isRentalItem: boolean;
   rentalPrice: number;
+  rentalDailyPrice?: number | null;
   inventory: Array<{
     size: string;
     quantity: number;
@@ -77,6 +78,16 @@ const costumeSchema = new Schema<ICostume>(
       validate: Number.isSafeInteger,
       default: 0,
       required: true,
+    },
+    // Separate daily pricing; missing values must not reinterpret existing flat prices.
+    rentalDailyPrice: {
+      type: Number,
+      default: null,
+      validate: {
+        validator: (value: number | null) =>
+          value === null || (Number.isSafeInteger(value) && value > 0),
+        message: 'Giá thuê/ngày phải là số nguyên dương hoặc để trống',
+      },
     },
     inventory: { type: [inventorySchema], default: [] },
   },
