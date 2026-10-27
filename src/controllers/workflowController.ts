@@ -18,6 +18,7 @@ import {
 } from '../services/workflowTransactions';
 import { sendResponse } from '../utils/response';
 import { rentalReservations, rentalUsed } from '../services/rentalAvailability';
+import { bookingCostumeDto } from '../services/bookingCostumeHolds';
 
 type Actor = NonNullable<Request['user']>;
 type ActionBody = Record<string, any> & { action?: string; expectedVersion?: number };
@@ -241,6 +242,7 @@ const toDto = async (booking: any, workflow: IBookingWorkflow | null, actor: Act
       endAt: booking.endAt,
       location: booking.location,
       note: clientView || canManage ? booking.note : undefined,
+      ...(clientView || canManage ? bookingCostumeDto(booking) : {}),
     },
     workflow: {
       bookingId: String(booking._id),
@@ -341,6 +343,13 @@ export const getWorkflow = async (req: Request, res: Response): Promise<void> =>
 export const listWorkflows = async (req: Request, res: Response): Promise<void> => {
   try {
     const actor = req.user!;
+    const view = req.query.view;
+    if (
+      view !== undefined &&
+      (typeof view !== 'string' || !['active', 'completed', 'cancelled', 'rejected'].includes(view))
+    ) {
+      throw new WorkflowProblem(400, 'Trạng thái lọc không hợp lệ');
+    }
     const page = Number(req.query.page ?? 1);
     const limit = Number(req.query.limit ?? 20);
     if (
@@ -367,6 +376,14 @@ export const listWorkflows = async (req: Request, res: Response): Promise<void> 
       if (!clauses.length) throw new WorkflowProblem(403, 'Forbidden: insufficient role');
       bookingFilter = { $or: clauses };
     }
+    if (view === 'rejected') bookingFilter.status = 'rejected';
+    else if (view) {
+      const closed = await BookingWorkflow.find({
+        lifecycle: view === 'active' ? { $in: ['completed', 'cancelled'] } : view,
+      }).distinct('booking');
+      bookingFilter._id = view === 'active' ? { $nin: closed } : { $in: closed };
+      if (view === 'active') bookingFilter.status = { $ne: 'rejected' };
+    }
     const [bookings, total] = await Promise.all([
       Booking.find(bookingFilter)
         .sort({ updatedAt: -1, _id: -1 })
@@ -391,6 +408,8 @@ export const listWorkflows = async (req: Request, res: Response): Promise<void> 
         lifecycle: workflow?.lifecycle ?? 'intake',
         packageName: booking.packageName,
         className: booking.className,
+        school: booking.school,
+        startTime: workflow?.quote?.proposedSchedule?.startTime,
         shootDate: workflow?.quote?.proposedSchedule?.shootDate ?? booking.startAt,
         updatedAt: workflow?.updatedAt ?? booking.updatedAt,
         bookingStatus: booking.status,
@@ -639,7 +658,7 @@ const validateResources = async (
     })
       .session(session)
       .lean()) as any[];
-    const rentals = await rentalReservations(costumeId, session);
+    const rentals = await rentalReservations(costumeId, session, undefined, String(booking._id));
     for (let day = item.receiveDate.getTime(); day <= item.returnDate.getTime(); day += 86400000) {
       const date = new Date(day);
       let used = rentalUsed(rentals, costumeId, item.size, date);
@@ -1167,6 +1186,10 @@ const runAction = async (
           { session },
         );
         workflow.resources.schedule = schedule._id;
+        if (booking.costumeHold && ['approved', 'temporary'].includes(booking.costumeHold.status)) {
+          booking.costumeHold.status = 'transferred';
+          await booking.save({ session });
+        }
         workflow.resources.photographers = resourceValues.photographerIds.map(
           (id: string) => new Types.ObjectId(String(id)),
         ) as any;
@@ -1468,6 +1491,12 @@ const runAction = async (
           }
           workflow.memberEntry.opened = false;
           workflow.lifecycle = 'cancelled';
+          if (booking.costumeHold && booking.costumeHold.status !== 'transferred') {
+            booking.costumeHold.status = 'released';
+            booking.costumeHold.releasedAt = new Date();
+            booking.costumeHold.releaseReason = 'Hủy dịch vụ';
+            await booking.save({ session });
+          }
         } else {
           if (workflow.resources.schedule)
             await applyScheduleChange(booking, workflow, request.proposed, actor, session);

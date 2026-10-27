@@ -7,6 +7,7 @@ const express = require('express');
 const Costume = require('../src/models/Costume').default;
 const RentalOrder = require('../src/models/RentalOrder').default;
 const Schedule = require('../src/models/Schedule').default;
+const Booking = require('../src/models/Booking').default;
 const costumeController = require('../src/controllers/costumeController');
 const { readCostumeCatalogFilters, readCostumeInput } = require('../src/utils/costumeInput');
 const { readRentalPeriod, rentalDays, vietnamDay } = require('../src/utils/rentalPeriod');
@@ -32,6 +33,7 @@ const query = (rows) => ({
   lean: async () => rows,
 });
 const mockHolds = (t, orders = [], schedules = []) => {
+  t.mock.method(Booking, 'find', () => query([]));
   t.mock.method(RentalOrder, 'find', () => query(orders));
   t.mock.method(Schedule, 'find', () => query(schedules));
 };

@@ -40,6 +40,37 @@ const bookingSchema = new Schema(
     endAt: { type: Date, required: true },
     location: { type: String, required: true },
     note: { type: String, default: '' },
+    costumeSelections: {
+      type: [
+        new Schema(
+          {
+            costumeId: { type: Schema.Types.ObjectId, ref: 'Costume', required: true },
+            name: { type: String, required: true },
+            typeId: { type: Schema.Types.ObjectId, ref: 'CostumeType', required: true },
+            typeName: { type: String, required: true },
+            size: { type: String, required: true },
+            quantity: { type: Number, required: true, min: 1 },
+          },
+          { _id: false },
+        ),
+      ],
+      default: [],
+    },
+    costumeHold: new Schema(
+      {
+        status: {
+          type: String,
+          enum: ['temporary', 'approved', 'released', 'transferred'],
+          required: true,
+        },
+        receiveDate: { type: Date, required: true },
+        returnDate: { type: Date, required: true },
+        expiresAt: Date,
+        releasedAt: Date,
+        releaseReason: String,
+      },
+      { _id: false },
+    ),
     status: { type: String, enum: ['pending', 'approved', 'rejected'], default: 'pending' },
     reviewNote: { type: String, default: '' },
     reviewedBy: { type: Schema.Types.ObjectId, ref: 'User' },
@@ -50,6 +81,11 @@ const bookingSchema = new Schema(
 );
 bookingSchema.index({ status: 1, createdAt: -1 });
 bookingSchema.index({ client: 1, createdAt: -1 });
+bookingSchema.index({
+  'costumeSelections.costumeId': 1,
+  'costumeHold.status': 1,
+  'costumeHold.expiresAt': 1,
+});
 bookingSchema.index(
   { client: 1, clientRequestId: 1 },
   {

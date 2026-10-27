@@ -6,6 +6,8 @@ import { readCostumeCatalogFilters, readCostumeInput } from '../utils/costumeInp
 import Schedule from '../models/Schedule';
 import BookingWorkflow from '../models/BookingWorkflow';
 import RentalOrder from '../models/RentalOrder';
+import Booking from '../models/Booking';
+import { activeBookingHoldFilter } from '../services/bookingCostumeHolds';
 import {
   ensureRentalStockPreserved,
   getRentalAvailability,
@@ -39,6 +41,17 @@ const ensureCostumeChangePreservesReservations = async (
     value.inventory !== undefined &&
     JSON.stringify(old.inventory ?? []) !== JSON.stringify(value.inventory);
   if (!typeChanged && !inventoryChanged) return;
+  if (
+    typeChanged &&
+    (await Booking.exists({
+      ...activeBookingHoldFilter(),
+      'costumeSelections.costumeId': id,
+    }).session(session))
+  )
+    throw new WorkflowProblem(
+      409,
+      'Trang phục đang được yêu cầu đặt dịch vụ giữ; không thể đổi loại.',
+    );
   if (inventoryChanged) await ensureRentalStockPreserved(id, value.inventory, session);
   const schedules = (await Schedule.find({
     costumes: id,
@@ -302,12 +315,19 @@ export const remove = async (req: Request, res: Response): Promise<void> => {
           { 'quote.lines.costumeId': current._id },
         ],
       });
+      const bookingQuery = Booking.exists({ 'costumeSelections.costumeId': current._id });
       if (session) {
         scheduleQuery.session(session);
         workflowQuery.session(session);
         rentalQuery.session(session);
+        bookingQuery.session(session);
       }
-      if ((await scheduleQuery) || (await workflowQuery) || (await rentalQuery))
+      if (
+        (await scheduleQuery) ||
+        (await workflowQuery) ||
+        (await rentalQuery) ||
+        (await bookingQuery)
+      )
         throw new WorkflowProblem(
           409,
           'Trang phục đang được lịch hoặc booking tham chiếu nên không thể xóa',

@@ -52,6 +52,21 @@ export interface BookingWorkflowDto {
     endAt: string;
     location: string;
     note?: string;
+    costumeSelections?: Array<{
+      costumeId: string;
+      name: string;
+      typeId: string;
+      typeName: string;
+      size: string;
+      quantity: number;
+    }>;
+    costumeHold?: {
+      status: 'temporary' | 'expired' | 'approved' | 'released' | 'transferred';
+      receiveDate: string;
+      returnDate: string;
+      expiresAt?: string;
+      releaseReason?: string;
+    } | null;
   };
   workflow: {
     bookingId: string;

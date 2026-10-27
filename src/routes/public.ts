@@ -9,6 +9,11 @@ import * as feedbackController from '../controllers/feedbackController';
 import type { CostumeDto, PublicScheduleResponse } from '../types/dto';
 import { sendResponse } from '../utils/response';
 import { getPublicMemberIntake, submitPublicMember } from '../controllers/workflowController';
+import { isValidObjectId } from 'mongoose';
+import Costume from '../models/Costume';
+import { getRentalAvailability, loadRentalHolds } from '../services/rentalAvailability';
+import { vietnamDay } from '../utils/rentalPeriod';
+import { asyncHandler } from '../middleware/asyncHandler';
 
 const router = Router();
 
@@ -37,6 +42,50 @@ router.get('/packages', async (_req: Request, res: Response): Promise<void> => {
 });
 
 // Public catalog requires receiveDate/returnDate; confirmation rechecks availability atomically.
+router.get(
+  '/packages/:id/costumes',
+  asyncHandler(async (req, res) => {
+    const start = new Date(typeof req.query.startAt === 'string' ? req.query.startAt : '');
+    const end = new Date(typeof req.query.endAt === 'string' ? req.query.endAt : '');
+    if (
+      !isValidObjectId(req.params.id) ||
+      !Number.isFinite(start.getTime()) ||
+      !Number.isFinite(end.getTime()) ||
+      start <= new Date() ||
+      end <= start ||
+      end.getTime() - start.getTime() > 7 * 86400000
+    ) {
+      sendResponse(res, 400, false, 'Chọn gói và thời gian trong tương lai, tối đa 7 ngày.');
+      return;
+    }
+    const pkg = await Package.findById(req.params.id).populate('costumes', 'name').lean();
+    if (!pkg) {
+      sendResponse(res, 404, false, 'Gói dịch vụ không còn tồn tại');
+      return;
+    }
+    const types = (pkg.costumes ?? []) as unknown as Array<{ _id: unknown; name: string }>;
+    const costumes = await Costume.find({
+      type: { $in: types.map((type) => type._id) },
+      itemKind: 'clothing',
+    })
+      .select('name description gender type inventory')
+      .sort({ name: 1 })
+      .lean();
+    const { orders, schedules } = await loadRentalHolds(costumes.map((item) => String(item._id)));
+    const period = { receiveDate: vietnamDay(start), returnDate: vietnamDay(end) };
+    const data = costumes.map((costume) => ({
+      _id: String(costume._id),
+      name: costume.name,
+      description: costume.description,
+      gender: costume.gender,
+      typeId: String(costume.type),
+      typeName: types.find((type) => String(type._id) === String(costume.type))?.name ?? '',
+      availableBySize: getRentalAvailability(costume, period, orders, schedules),
+    }));
+    sendResponse(res, 200, true, 'OK', data);
+  }),
+);
+
 router.get('/costumes', costumeController.getPublicCatalog);
 router.get('/costume-types', costumeController.getPublicCatalogCategories);
 

@@ -4,6 +4,7 @@ import Schedule from '../models/Schedule';
 import RentalOrder from '../models/RentalOrder';
 import { vietnamDay } from '../utils/rentalPeriod';
 import { WorkflowProblem } from './workflowTransactions';
+import { loadBookingCostumeHolds } from './bookingCostumeHolds';
 
 export { vietnamDay } from '../utils/rentalPeriod';
 
@@ -14,6 +15,7 @@ export const rentalReservations = async (
   costumeId: string,
   session?: ClientSession,
   exclude?: string,
+  excludeBooking?: string,
 ) => {
   const query = RentalOrder.find({
     status: { $in: HOLD_STATUSES },
@@ -21,7 +23,10 @@ export const rentalReservations = async (
     ...(exclude ? { _id: { $ne: exclude } } : {}),
   });
   if (session) query.session(session);
-  return query.lean();
+  return [
+    ...(await query.lean()),
+    ...(await loadBookingCostumeHolds([costumeId], session, excludeBooking)),
+  ];
 };
 
 export const loadRentalHolds = async (
@@ -47,7 +52,10 @@ export const loadRentalHolds = async (
     schedules.session(session);
   }
   // Sequential execution also works inside MongoDB transactions.
-  return { orders: await orders.lean(), schedules: await schedules.lean() };
+  return {
+    orders: [...(await orders.lean()), ...(await loadBookingCostumeHolds(costumeIds, session))],
+    schedules: await schedules.lean(),
+  };
 };
 
 export const rentalUsed = (

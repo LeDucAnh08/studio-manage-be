@@ -11,6 +11,15 @@ import { sendResponse } from '../utils/response';
 import { boundedInteger, trimmedText } from '../utils/input';
 import { requireClientPortal } from '../middleware/featureFlags';
 import {
+  createBookingWithCostumes,
+  parseCostumeSelections,
+  releaseBookingCostumes,
+  reviewBookingWithCostumes,
+} from '../services/bookingCostumes';
+import { bookingCostumeDto } from '../services/bookingCostumeHolds';
+import { WorkflowProblem } from '../services/workflowTransactions';
+import type { Request, Response } from 'express';
+import {
   getWorkflow,
   executeWorkflowAction,
   listWorkflows,
@@ -22,6 +31,22 @@ router.use(requireClientPortal);
 router.use(protect);
 const isAdmin = (roles: number[]) => roles.some((role) => role === 0 || role === 1);
 const bookingStatuses = ['pending', 'approved', 'rejected'] as const;
+const bookingHandler = (work: (req: Request, res: Response) => Promise<void>) =>
+  asyncHandler(async (req, res) => {
+    try {
+      await work(req, res);
+    } catch (error) {
+      if (!(error instanceof WorkflowProblem)) throw error;
+      const message =
+        error.status === 503
+          ? 'Chức năng giữ trang phục tạm thời chưa sẵn sàng. Vui lòng thử lại sau.'
+          : error.message;
+      sendResponse(res, error.status, false, message, {
+        costumeConflicts: (error as WorkflowProblem & { costumeConflicts?: unknown })
+          .costumeConflicts,
+      });
+    }
+  });
 
 const fingerprint = (parts: unknown[]): string =>
   createHash('sha256').update(JSON.stringify(parts)).digest('hex');
@@ -107,7 +132,7 @@ router.get(
 router.post(
   '/',
   requireRole(6),
-  asyncHandler(async (req, res) => {
+  bookingHandler(async (req, res) => {
     const { packageId, startAt, endAt } = req.body;
     const members = boundedInteger(req.body.members, 1, 1000);
     const contactName = trimmedText(req.body.contactName, 100);
@@ -145,6 +170,7 @@ router.post(
       );
       return;
     }
+    const costumeSelections = parseCostumeSelections(req.body.costumeSelections);
     const requestFingerprint = fingerprint([
       packageId,
       members,
@@ -154,6 +180,7 @@ router.post(
       end.toISOString(),
       location,
       note,
+      ...(costumeSelections.length ? [costumeSelections] : []),
     ]);
 
     if (idempotencyKey) {
@@ -220,6 +247,14 @@ router.post(
       ],
     };
 
+    if (costumeSelections.length) {
+      const result = await createBookingWithCostumes(payload, costumeSelections);
+      sendResponse(res, result.created ? 201 : 200, true, 'Đã ghi nhận yêu cầu và trang phục', {
+        _id: result._id,
+      });
+      return;
+    }
+
     if (idempotencyKey) {
       const result = await Booking.updateOne(
         { client: req.user!._id, clientRequestId: idempotencyKey },
@@ -270,13 +305,13 @@ router.get(
     const events = data.events.filter(
       (event) => event.audience === (isAdmin(req.user!.roles) ? 'admin' : 'client'),
     );
-    sendResponse(res, 200, true, 'OK', { ...data, events });
+    sendResponse(res, 200, true, 'OK', { ...data, ...bookingCostumeDto(data), events });
   }),
 );
 router.patch(
   '/:id/review',
   requireRole(0, 1),
-  asyncHandler(async (req, res) => {
+  bookingHandler(async (req, res) => {
     const status = req.body.status;
     const reviewNote = trimmedText(req.body.note, 2000);
     if (
@@ -290,6 +325,17 @@ router.patch(
         false,
         'Chọn quyết định và nhập nội dung phản hồi (tối đa 2000 ký tự).',
       );
+      return;
+    }
+    const existing = await Booking.findOne({ _id: req.params.id }).select('costumeHold').lean();
+    if (existing?.costumeHold) {
+      const data = await reviewBookingWithCostumes(
+        req.params.id,
+        status,
+        reviewNote,
+        req.user!._id,
+      );
+      sendResponse(res, 200, true, 'Đã phản hồi yêu cầu', { _id: data._id });
       return;
     }
     const at = new Date();
@@ -320,6 +366,17 @@ router.patch(
       return;
     }
     sendResponse(res, 200, true, 'Đã phản hồi yêu cầu', { _id: data._id });
+  }),
+);
+
+router.patch(
+  '/:id/costume-hold/release',
+  requireRole(0, 1),
+  bookingHandler(async (req, res) => {
+    const note = trimmedText(req.body.note, 2000);
+    if (!note) throw new WorkflowProblem(400, 'Nhập lý do bỏ giữ trang phục (tối đa 2.000 ký tự).');
+    const booking = await releaseBookingCostumes(req.params.id, note);
+    sendResponse(res, 200, true, 'Đã bỏ giữ trang phục', bookingCostumeDto(booking));
   }),
 );
 

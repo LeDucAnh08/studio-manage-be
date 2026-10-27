@@ -1,4 +1,5 @@
 import mongoose, { ClientSession } from 'mongoose';
+import { activeBookingHoldFilter } from './bookingCostumeHolds';
 
 export class WorkflowProblem extends Error {
   status: number;
@@ -70,12 +71,18 @@ export const workflowEnabled = (): boolean =>
 
 // Disabling workflow writes must not let legacy writes bypass existing holds.
 export const resourceTransactionsRequired = async (): Promise<boolean> =>
+  // The portal can create the first booking hold concurrently with an inventory
+  // edit, so serialize writers even before any hold is visible.
+  process.env.CLIENT_PORTAL_ENABLED?.toLowerCase() === 'true' ||
   workflowEnabled() ||
   process.env.CLIENT_RENTAL_ENABLED?.toLowerCase() === 'true' ||
   (mongoose.connection.readyState === 1 &&
     (!!(await mongoose.connection
-      .collection('rentalorders')
-      .findOne({ status: { $in: ['confirmed', 'checked_out'] } }, { projection: { _id: 1 } })) ||
+      .collection('bookings')
+      .findOne(activeBookingHoldFilter(), { projection: { _id: 1 } })) ||
+      !!(await mongoose.connection
+        .collection('rentalorders')
+        .findOne({ status: { $in: ['confirmed', 'checked_out'] } }, { projection: { _id: 1 } })) ||
       !!(await mongoose.connection.collection('schedules').findOne(
         {
           workflowBooking: { $exists: true, $ne: null },
