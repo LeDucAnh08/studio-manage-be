@@ -189,6 +189,11 @@ const workflowSchema = new Schema(
       index: true,
     },
     customer: { type: Schema.Types.ObjectId, ref: 'Customer' },
+    assignedPhotographer: { type: Schema.Types.ObjectId, ref: 'User' },
+    assignedSupportPhotographers: {
+      type: [{ type: Schema.Types.ObjectId, ref: 'User' }],
+      default: undefined,
+    },
     quote: { type: quoteSchema },
     quoteHistory: { type: [quoteSchema], default: [] },
     payments: { type: [paymentSchema], default: [] },
@@ -255,6 +260,8 @@ const workflowSchema = new Schema(
 );
 
 workflowSchema.index({ 'resources.photographers': 1, lifecycle: 1 });
+workflowSchema.index({ assignedPhotographer: 1, lifecycle: 1 });
+workflowSchema.index({ assignedSupportPhotographers: 1, lifecycle: 1 });
 workflowSchema.index({ 'members.requestId': 1 }, { sparse: true });
 
 export interface IBookingWorkflow extends mongoose.Document {
@@ -262,6 +269,8 @@ export interface IBookingWorkflow extends mongoose.Document {
   version: number;
   lifecycle: string;
   customer?: Types.ObjectId;
+  assignedPhotographer?: Types.ObjectId;
+  assignedSupportPhotographers?: Types.ObjectId[];
   quote?: Record<string, any>;
   quoteHistory: Array<Record<string, any>>;
   payments: Array<Record<string, any>>;

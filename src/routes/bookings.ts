@@ -4,6 +4,8 @@ import { isValidObjectId } from 'mongoose';
 import Booking from '../models/Booking';
 import Package from '../models/Package';
 import User from '../models/User';
+import BookingWorkflow from '../models/BookingWorkflow';
+import { workflowPhotographers } from '../services/workflowPhotographer';
 import { protect } from '../middleware/auth';
 import { requireRole } from '../middleware/role';
 import { asyncHandler } from '../middleware/asyncHandler';
@@ -126,7 +128,23 @@ router.get(
         .lean(),
       Booking.countDocuments(filter),
     ]);
-    sendResponse(res, 200, true, 'OK', data, { total, page, limit });
+    const workflows = await BookingWorkflow.find({
+      booking: { $in: data.map((item) => item._id) },
+    }).lean();
+    const assignments = await workflowPhotographers(workflows);
+    sendResponse(
+      res,
+      200,
+      true,
+      'OK',
+      data.map((item) => ({
+        ...item,
+        assignedPhotographer: assignments.get(String(item._id))?.assignedPhotographer ?? null,
+        assignedSupportPhotographers:
+          assignments.get(String(item._id))?.assignedSupportPhotographers ?? [],
+      })),
+      { total, page, limit },
+    );
   }),
 );
 router.post(

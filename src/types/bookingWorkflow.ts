@@ -14,6 +14,7 @@ export type BookingWorkflowLifecycle =
   | 'cancelled';
 
 export type BookingWorkflowAction =
+  | 'photographer.assign'
   | 'quote.propose'
   | 'quote.accept'
   | 'payment.record'
@@ -72,6 +73,14 @@ export interface BookingWorkflowDto {
     bookingId: string;
     version: number;
     lifecycle: BookingWorkflowLifecycle;
+    assignedPhotographer?: { _id: string; name: string } | null;
+    assignedSupportPhotographers?: { _id: string; name: string }[];
+    proposedSchedule?: {
+      shootDate: string;
+      startTime: string;
+      endTime: string;
+      location: string;
+    } | null;
     quote: null | {
       version: number;
       currency: string;
@@ -213,6 +222,8 @@ export interface PublicMemberSubmission {
 }
 
 export interface WorkflowSummary {
+  assignedPhotographer?: { _id: string; name: string } | null;
+  assignedSupportPhotographers?: { _id: string; name: string }[];
   bookingId: string;
   version: number;
   lifecycle: BookingWorkflowLifecycle;

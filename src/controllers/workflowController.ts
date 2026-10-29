@@ -19,6 +19,11 @@ import {
 import { sendResponse } from '../utils/response';
 import { rentalReservations, rentalUsed } from '../services/rentalAvailability';
 import { bookingCostumeDto } from '../services/bookingCostumeHolds';
+import {
+  ensurePhotographersAvailable,
+  scheduleInterval,
+} from '../services/photographerAvailability';
+import { workflowPhotographers } from '../services/workflowPhotographer';
 
 type Actor = NonNullable<Request['user']>;
 type ActionBody = Record<string, any> & { action?: string; expectedVersion?: number };
@@ -99,9 +104,16 @@ const scheduleDto = (workflow: IBookingWorkflow) =>
 const toDto = async (booking: any, workflow: IBookingWorkflow | null, actor: Actor) => {
   const clientView = owner(booking, actor);
   const canManage = admin(actor);
-  const isAssigned = !!workflow?.resources?.photographers?.some(
-    (id) => String(id) === String(actor._id),
-  );
+  const assignment = workflow
+    ? ((await workflowPhotographers([workflow])).get(String(booking._id)) ?? null)
+    : null;
+  const assignedPhotographer = assignment?.assignedPhotographer ?? null;
+  const assignedSupportPhotographers = assignment?.assignedSupportPhotographers ?? [];
+  const isAssigned =
+    isRole(actor, 3) &&
+    (assignedPhotographer?._id === String(actor._id) ||
+      assignedSupportPhotographers.some((person) => person._id === String(actor._id)) ||
+      !!workflow?.resources?.photographers?.some((id) => String(id) === String(actor._id)));
   if (!clientView && !canManage && !isAssigned && !isRole(actor, 5)) {
     throw new WorkflowProblem(404, 'Không tìm thấy booking');
   }
@@ -237,17 +249,23 @@ const toDto = async (booking: any, workflow: IBookingWorkflow | null, actor: Act
       className: booking.className,
       school: booking.school,
       contactName: clientView || canManage || isAssigned ? booking.contactName : undefined,
-      phone: clientView || canManage ? booking.phone : undefined,
+      phone: clientView || canManage || isAssigned ? booking.phone : undefined,
       startAt: booking.startAt,
       endAt: booking.endAt,
       location: booking.location,
-      note: clientView || canManage ? booking.note : undefined,
+      note: clientView || canManage || isAssigned ? booking.note : undefined,
       ...(clientView || canManage ? bookingCostumeDto(booking) : {}),
     },
     workflow: {
       bookingId: String(booking._id),
       version: workflow?.version ?? 0,
       lifecycle: workflow?.lifecycle ?? 'intake',
+      assignedPhotographer,
+      assignedSupportPhotographers,
+      proposedSchedule:
+        (clientView || canManage || isAssigned) && workflow?.quote
+          ? workflow.quote.proposedSchedule
+          : null,
       quote: financialView ? quote : null,
       quoteHistory: financialView
         ? (workflow?.quoteHistory ?? []).map((item: any) => ({
@@ -309,7 +327,7 @@ const toDto = async (booking: any, workflow: IBookingWorkflow | null, actor: Act
           if (canManage) return true;
           if (clientView) return event.audience === 'client';
           if (isRole(actor, 5)) return event.audience === 'accounting';
-          return event.audience === 'photographer';
+          return event.audience === 'photographer' || event.action === 'photographer.assign';
         })
         .map((event: any) => ({ action: event.action, message: event.message, at: event.at })),
       memberEntry: clientView || canManage ? { opened: !!workflow?.memberEntry?.opened } : null,
@@ -369,7 +387,11 @@ export const listWorkflows = async (req: Request, res: Response): Promise<void> 
       if (isRole(actor, 6)) clauses.push({ client: actor._id });
       if (isRole(actor, 3)) {
         const assigned = await BookingWorkflow.find({
-          'resources.photographers': actor._id,
+          $or: [
+            { 'resources.photographers': actor._id },
+            { assignedPhotographer: actor._id },
+            { assignedSupportPhotographers: actor._id },
+          ],
         }).distinct('booking');
         clauses.push({ _id: { $in: assigned } });
       }
@@ -394,6 +416,7 @@ export const listWorkflows = async (req: Request, res: Response): Promise<void> 
     ]);
     const ids = bookings.map((booking: any) => booking._id);
     const workflows = await BookingWorkflow.find({ booking: { $in: ids } }).lean();
+    const assignments = await workflowPhotographers(workflows);
     const byBooking = new Map(
       workflows.map((workflow: any) => [String(workflow.booking), workflow]),
     );
@@ -406,6 +429,9 @@ export const listWorkflows = async (req: Request, res: Response): Promise<void> 
         bookingId: String(booking._id),
         version: workflow?.version ?? 0,
         lifecycle: workflow?.lifecycle ?? 'intake',
+        assignedPhotographer: assignments.get(String(booking._id))?.assignedPhotographer ?? null,
+        assignedSupportPhotographers:
+          assignments.get(String(booking._id))?.assignedSupportPhotographers ?? [],
         packageName: booking.packageName,
         className: booking.className,
         school: booking.school,
@@ -596,38 +622,12 @@ const validateResources = async (
   const location = cleanText(proposed.location, 300);
   if (!location) throw new WorkflowProblem(400, 'Địa điểm chụp là bắt buộc');
 
-  const photographers = await User.find({ _id: { $in: photographerIds }, isActive: true, roles: 3 })
-    .session(session)
-    .select('_id')
-    .lean();
-  if (photographers.length !== photographerIds.length)
-    throw new WorkflowProblem(400, 'Mỗi thợ được phân công phải là nhân viên đang hoạt động');
-  const dayStartRange = new Date(shootDate.getTime() - 7 * 60 * 60 * 1000);
-  const dayEndRange = new Date(shootDate.getTime() + 86400000 + 7 * 60 * 60 * 1000);
-  const schedules = await Schedule.find({
-    status: { $in: ['pending', 'confirmed'] },
-    shootDate: { $gte: dayStartRange, $lt: dayEndRange },
-    $or: [
-      { leadPhotographer: { $in: photographerIds } },
-      { supportPhotographers: { $in: photographerIds } },
-    ],
-    ...(excludeSchedule ? { _id: { $ne: excludeSchedule } } : {}),
-  })
-    .session(session)
-    .lean();
-  for (const existing of schedules) {
-    if (dayStart(existing.shootDate).getTime() !== shootDate.getTime()) continue;
-    const oldStart = parseTime(existing.startTime);
-    const oldEnd = parseTime(existing.endTime);
-    if (oldStart === null || oldEnd === null) {
-      throw new WorkflowProblem(
-        409,
-        'Lịch cũ chưa có khung giờ; hãy đối soát lịch đó trước khi phân công thợ chụp',
-      );
-    }
-    if (start < oldEnd && oldStart < end)
-      throw new WorkflowProblem(409, 'Thợ chụp đã có lịch bị trùng giờ');
-  }
+  await ensurePhotographersAvailable(
+    photographerIds,
+    scheduleInterval({ shootDate, startTime: proposed.startTime, endTime: proposed.endTime })!,
+    session,
+    excludeSchedule,
+  );
 
   const seen = new Set<string>();
   for (const item of costumes) {
@@ -819,6 +819,12 @@ const applyScheduleChange = async (
   );
   const schedule = await Schedule.findById(String(scheduleId)).session(session);
   if (!schedule) throw new WorkflowProblem(409, 'Linked schedule no longer exists');
+  const primary = workflow.assignedPhotographer ?? schedule.leadPhotographer;
+  if (primary && String(primary) !== values.photographerIds[0])
+    throw new WorkflowProblem(
+      409,
+      'Đổi thợ phụ trách bằng chức năng phân công trước khi đề xuất đổi lịch.',
+    );
   schedule.shootDate = values.shootDate;
   schedule.startTime = values.startTime;
   schedule.endTime = values.endTime;
@@ -839,6 +845,9 @@ const applyScheduleChange = async (
   workflow.resources.photographers = values.photographerIds.map(
     (id: string) => new Types.ObjectId(id),
   ) as any;
+  workflow.assignedSupportPhotographers = values.photographerIds
+    .slice(1)
+    .map((id: string) => new Types.ObjectId(id));
   workflow.resources.costumes = costumes as any;
 };
 
@@ -949,6 +958,80 @@ const runAction = async (
     };
 
     switch (action) {
+      case 'photographer.assign': {
+        requireAdmin();
+        if (
+          booking.status === 'rejected' ||
+          !['intake', 'quoting', 'awaiting_deposit', 'ready_to_confirm', 'confirmed'].includes(
+            workflow.lifecycle,
+          ) ||
+          (workflow.changeRequest &&
+            ['requested', 'proposed', 'accepted'].includes(workflow.changeRequest.status))
+        )
+          throw new WorkflowProblem(
+            409,
+            'Chỉ đổi phân công trước khi chụp và khi không có đề xuất thay đổi đang xử lý.',
+          );
+        const linked = workflow.resources.schedule
+          ? await Schedule.findById(workflow.resources.schedule).session(session)
+          : null;
+        if (workflow.resources.schedule && !linked)
+          throw new WorkflowProblem(409, 'Không tìm thấy lịch đã liên kết.');
+        if (linked && !['pending', 'confirmed'].includes(linked.status))
+          throw new WorkflowProblem(409, 'Lịch đã kết thúc hoặc hủy, không thể đổi thợ.');
+        const range = linked
+          ? scheduleInterval(linked)
+          : workflow.quote
+            ? scheduleInterval(workflow.quote.proposedSchedule as any)
+            : { start: booking.startAt.getTime(), end: booking.endAt.getTime() };
+        if (!range) throw new WorkflowProblem(409, 'Cần khung giờ hợp lệ trước khi phân công.');
+        const explicitTeam = Object.prototype.hasOwnProperty.call(body, 'photographerIds');
+        const requested = explicitTeam ? body.photographerIds : [body.photographerId];
+        if (
+          !Array.isArray(requested) ||
+          requested.length < 1 ||
+          requested.length > 10 ||
+          requested.some((id: unknown) => typeof id !== 'string' || !isValidObjectId(id)) ||
+          new Set(requested).size !== requested.length
+        )
+          throw new WorkflowProblem(
+            400,
+            'Chọn từ 1 đến 10 thợ hợp lệ, không trùng nhau. Thợ đầu tiên là thợ chính.',
+          );
+        const nextId: string = requested[0];
+        const supports: string[] = explicitTeam
+          ? requested.slice(1)
+          : (linked?.supportPhotographers ?? workflow.assignedSupportPhotographers ?? [])
+              .map(String)
+              .filter((id: string) => id !== nextId);
+        await ensurePhotographersAvailable(
+          [nextId, ...supports],
+          range,
+          session,
+          linked?._id as Types.ObjectId | undefined,
+        );
+        workflow.assignedPhotographer = new Types.ObjectId(nextId);
+        workflow.assignedSupportPhotographers = supports.map((id) => new Types.ObjectId(id));
+        // Also conflict with concurrent intake rejection and refresh the intake list ordering.
+        booking.updatedAt = new Date();
+        await booking.save({ session });
+        if (linked) {
+          linked.leadPhotographer = new Types.ObjectId(nextId);
+          linked.supportPhotographers = supports.map((id) => new Types.ObjectId(id));
+          await linked.save({ session });
+          workflow.resources.photographers = [nextId, ...supports].map(
+            (id) => new Types.ObjectId(id),
+          );
+        }
+        const person = await User.findById(nextId).select('name username').session(session).lean();
+        const supportPeople = await User.find({ _id: { $in: supports } })
+          .select('name username')
+          .session(session)
+          .lean();
+        const message = `Thợ phụ trách: ${person?.name || person?.username}. Thợ hỗ trợ: ${supportPeople.map((row) => row.name || row.username).join(', ') || 'Không có'}. ${linked ? 'Đã cập nhật ekip của lịch.' : 'Chưa giữ khung giờ chụp.'}`;
+        logEvent(workflow, actor, action, message, 'client');
+        break;
+      }
       case 'quote.propose': {
         requireAdmin();
         requireApproved();
@@ -1154,6 +1237,18 @@ const runAction = async (
           costumes,
           session,
         );
+        if (
+          workflow.assignedPhotographer &&
+          String(workflow.assignedPhotographer) !== resourceValues.photographerIds[0]
+        )
+          throw new WorkflowProblem(
+            409,
+            'Thợ phụ trách phải là thợ chính. Hãy cập nhật phân công trước khi xác nhận.',
+          );
+        workflow.assignedPhotographer = new Types.ObjectId(resourceValues.photographerIds[0]);
+        workflow.assignedSupportPhotographers = resourceValues.photographerIds
+          .slice(1)
+          .map((id: string) => new Types.ObjectId(id));
         await createLinkedCustomer(booking, workflow, session);
         const [schedule] = await Schedule.create(
           [

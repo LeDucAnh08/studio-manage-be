@@ -18,6 +18,10 @@ import { ClientSession, Types } from 'mongoose';
 import { withResourceTransaction, WorkflowProblem } from '../services/workflowTransactions';
 import { resourceTransactionsRequired } from '../services/workflowTransactions';
 import { rentalReservations, rentalUsed } from '../services/rentalAvailability';
+import {
+  ensurePhotographersAvailable,
+  scheduleInterval,
+} from '../services/photographerAvailability';
 
 interface ScheduleQuery {
   customer?: string;
@@ -82,32 +86,12 @@ const ensureScheduleResourcesAvailable = async (
     throw new WorkflowProblem(409, 'Lịch có thợ chụp cần khung giờ hợp lệ để kiểm tra xung đột');
   }
   if (photographerIds.length && ['pending', 'confirmed'].includes(proposed.status ?? 'pending')) {
-    const schedules = await Schedule.find({
-      status: { $in: ['pending', 'confirmed'] },
-      shootDate: {
-        $gte: new Date(shootDate.getTime() - 7 * 60 * 60 * 1000),
-        $lt: new Date(shootDate.getTime() + 86400000 + 7 * 60 * 60 * 1000),
-      },
-      $or: [
-        { leadPhotographer: { $in: photographerIds } },
-        { supportPhotographers: { $in: photographerIds } },
-      ],
-      ...(excludeId ? { _id: { $ne: excludeId } } : {}),
-    })
-      .session(session)
-      .lean();
-    for (const existing of schedules) {
-      if (vietnamDay(existing.shootDate).getTime() !== shootDate.getTime()) continue;
-      const oldStart = clockMinutes(existing.startTime);
-      const oldEnd = clockMinutes(existing.endTime);
-      if (oldStart === null || oldEnd === null)
-        throw new WorkflowProblem(
-          409,
-          'Lịch cũ chưa có khung giờ; hãy đối soát lịch đó trước khi phân công thợ chụp',
-        );
-      if (start! < oldEnd && oldStart < end!)
-        throw new WorkflowProblem(409, 'Thợ chụp đã có lịch bị trùng giờ');
-    }
+    await ensurePhotographersAvailable(
+      photographerIds,
+      scheduleInterval(proposed)!,
+      session,
+      excludeId,
+    );
   }
 
   const costumeIds = [...new Set(ids(proposed.costumes))];
@@ -246,9 +230,14 @@ const sendScheduleProblem = (res: Response, error: unknown): void => {
   sendResponse(res, problem.status ?? 500, false, problem.message ?? 'Internal server error');
 };
 
+const photographerReadScope = (req: Request): Record<string, unknown> =>
+  req.user!.roles.includes(3) && !req.user!.roles.some((role) => [0, 1, 2, 4].includes(role))
+    ? { $or: [{ leadPhotographer: req.user!._id }, { supportPhotographers: req.user!._id }] }
+    : {};
+
 export const getAll = async (req: Request, res: Response): Promise<void> => {
   const { page = '1', limit = '20', season, ...rest } = req.query as ScheduleQuery;
-  const filter = buildFilter(rest);
+  const filter = { ...buildFilter(rest), ...photographerReadScope(req) };
   if (season) {
     filter.season = season;
   }
@@ -277,7 +266,10 @@ export const getByCustomer = async (req: Request, res: Response): Promise<void> 
   const USER_FIELDS = '_id username name roles isActive createdAt';
   const CUSTOMER_FIELDS =
     '_id className school contactName contactPhone contactAddress total totalMale totalFemale notes createdAt';
-  const schedule = await Schedule.findOne({ customer: req.params.customer })
+  const schedule = await Schedule.findOne({
+    customer: req.params.customer,
+    ...photographerReadScope(req),
+  })
     .populate('customer', CUSTOMER_FIELDS)
     .populate({ path: 'package', populate: { path: 'costumes' } })
     .populate('costumes')
@@ -293,7 +285,7 @@ export const getOne = async (req: Request, res: Response): Promise<void> => {
   const USER_FIELDS = '_id username name roles isActive createdAt';
   const CUSTOMER_FIELDS =
     '_id className school contactName contactPhone contactAddress total totalMale totalFemale notes createdAt';
-  const schedule = await Schedule.findById(req.params.id)
+  const schedule = await Schedule.findOne({ _id: req.params.id, ...photographerReadScope(req) })
     .populate('customer', CUSTOMER_FIELDS)
     .populate({ path: 'package', populate: { path: 'costumes' } })
     .populate('costumes')
@@ -334,7 +326,11 @@ export const create = async (req: Request, res: Response): Promise<void> => {
     return;
   }
   let schedule: any;
-  if (await resourceTransactionsRequired()) {
+  if (
+    payload.leadPhotographer ||
+    payload.supportPhotographers?.length ||
+    (await resourceTransactionsRequired())
+  ) {
     try {
       await withResourceTransaction(async (session) => {
         if (!(await Customer.exists({ _id: payload.customer }).session(session)))
@@ -490,7 +486,15 @@ export const update = async (req: Request, res: Response): Promise<void> => {
     });
   };
   try {
-    if (await resourceTransactionsRequired())
+    if (
+      (await resourceTransactionsRequired()) ||
+      (await Schedule.exists({
+        _id: req.params.id,
+        $or: [{ leadPhotographer: { $ne: null } }, { 'supportPhotographers.0': { $exists: true } }],
+      })) ||
+      updateData.leadPhotographer ||
+      updateData.supportPhotographers?.length
+    )
       await withResourceTransaction(async (session) => updateInTransaction(session));
     else await updateInTransaction();
   } catch (error) {

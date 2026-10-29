@@ -23,6 +23,7 @@ import bookingRoutes from './routes/bookings';
 import workflowRoutes from './routes/workflows';
 import rentalRoutes from './routes/rentals';
 import reportRoutes from './routes/reports';
+import photographerRoutes from './routes/photographerAvailability';
 
 const envFile = '.env';
 dotenv.config({ path: path.resolve(__dirname, '..', envFile) });
@@ -60,6 +61,7 @@ app.use('/api/schedules', scheduleRoutes);
 app.use('/api/transactions', transactionRoutes);
 app.use('/api/categories', categoryRoutes);
 app.use('/api/users', userRoutes);
+app.use('/api/photographers', photographerRoutes);
 app.use('/api/students', studentRoutes);
 app.use('/api/packages', packageRoutes);
 app.use('/api/costumes', costumeRoutes);
