@@ -144,12 +144,19 @@ router.post(
     const idempotencyKey = req.get('Idempotency-Key')?.trim();
     const start = new Date(typeof startAt === 'string' ? startAt : '');
     const end = new Date(typeof endAt === 'string' ? endAt : '');
+    if (!phone || !/^(?:0|\+84)[1-9]\d{8}$/.test(phone.replace(/[ ().-]/g, ''))) {
+      sendResponse(
+        res,
+        400,
+        false,
+        'Nhập số điện thoại gồm 10 chữ số bắt đầu bằng 0 hoặc dạng +84 (ví dụ: 0901234567).',
+      );
+      return;
+    }
     if (
       typeof packageId !== 'string' ||
       !isValidObjectId(packageId) ||
       !contactName ||
-      !phone ||
-      !/^[+\d() .-]{8,25}$/.test(phone) ||
       className === null ||
       school === null ||
       !location ||

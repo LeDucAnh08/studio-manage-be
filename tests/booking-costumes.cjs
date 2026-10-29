@@ -3,7 +3,6 @@ process.env.TS_NODE_PROJECT = require('path').join(__dirname, '../tsconfig.json'
 process.env.JWT_SECRET = 'booking-costume-tests-only';
 process.env.CLIENT_PORTAL_ENABLED = 'true';
 process.env.CLIENT_WORKFLOW_ENABLED = 'true';
-process.env.CLIENT_RENTAL_ENABLED = 'true';
 require('ts-node/register/transpile-only');
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
@@ -441,7 +440,7 @@ test('booking costume holds share stock and transfer atomically on a real replic
     },
   );
   await t.test(
-    'existing schedules block bookings and booking holds protect stock, type and deletion even with feature flags off',
+    'existing schedules block bookings and booking holds protect stock, type and deletion even with photography workflow off',
     async () => {
       await models.Schedule.create({
         customer: new mongoose.Types.ObjectId(),
@@ -454,7 +453,6 @@ test('booking costume holds share stock and transfer atomically on a real replic
       await models.Schedule.deleteMany({});
       await create();
       process.env.CLIENT_WORKFLOW_ENABLED = 'false';
-      process.env.CLIENT_RENTAL_ENABLED = 'false';
       try {
         for (const [body, method] of [
           [{ inventory: [{ size: 'M', quantity: 1, condition: 'good' }] }, 'PUT'],
@@ -487,7 +485,6 @@ test('booking costume holds share stock and transfer atomically on a real replic
         );
       } finally {
         process.env.CLIENT_WORKFLOW_ENABLED = 'true';
-        process.env.CLIENT_RENTAL_ENABLED = 'true';
       }
     },
   );
@@ -612,7 +609,6 @@ test('booking costume holds share stock and transfer atomically on a real replic
     'the first booking hold races safely with stock edits while workflow and rental flags are disabled',
     async () => {
       process.env.CLIENT_WORKFLOW_ENABLED = 'false';
-      process.env.CLIENT_RENTAL_ENABLED = 'false';
       try {
         const responses = await Promise.all([
           call('/bookings', users.client, payload()),
@@ -640,7 +636,6 @@ test('booking costume holds share stock and transfer atomically on a real replic
         );
       } finally {
         process.env.CLIENT_WORKFLOW_ENABLED = 'true';
-        process.env.CLIENT_RENTAL_ENABLED = 'true';
       }
     },
   );

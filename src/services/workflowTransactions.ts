@@ -71,11 +71,10 @@ export const workflowEnabled = (): boolean =>
 
 // Disabling workflow writes must not let legacy writes bypass existing holds.
 export const resourceTransactionsRequired = async (): Promise<boolean> =>
-  // The portal can create the first booking hold concurrently with an inventory
-  // edit, so serialize writers even before any hold is visible.
-  process.env.CLIENT_PORTAL_ENABLED?.toLowerCase() === 'true' ||
+  // The default-open portal can create the first booking or rental hold during
+  // an inventory edit, so serialize writers even before any hold is visible.
+  process.env.CLIENT_PORTAL_ENABLED?.toLowerCase() !== 'false' ||
   workflowEnabled() ||
-  process.env.CLIENT_RENTAL_ENABLED?.toLowerCase() === 'true' ||
   (mongoose.connection.readyState === 1 &&
     (!!(await mongoose.connection
       .collection('bookings')

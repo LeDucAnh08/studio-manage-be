@@ -42,7 +42,11 @@ Booking.create = async (data) => {
   return record;
 };
 Booking.updateOne = async (filter, update) => {
-  if (record && record.client === filter.client && record.clientRequestId === filter.clientRequestId)
+  if (
+    record &&
+    record.client === filter.client &&
+    record.clientRequestId === filter.clientRequestId
+  )
     return { acknowledged: true, upsertedCount: 0 };
   bookingCreateCount += 1;
   const data = update.$setOnInsert;
@@ -201,6 +205,36 @@ test('Client registration and booking permissions over HTTP', async (t) => {
   await t.test('invalid or past time is rejected', async () =>
     assert.equal((await call('/bookings', alice, { ...data, startAt: '2020-01-01' })).status, 400),
   );
+  await t.test('invalid phone formats return 400 without creating a booking', async () => {
+    const before = bookingCreateCount;
+    for (const phone of [
+      '',
+      '        ',
+      '........',
+      'abcdefgh',
+      '12345678',
+      '0000000000',
+      '090123456',
+      '09012345678',
+      '+840901234567',
+      '090123456a',
+      '09+01234567',
+      901234567,
+      { $ne: null },
+    ]) {
+      const response = await call('/bookings', alice, { ...data, phone });
+      assert.equal(response.status, 400, JSON.stringify(phone));
+      assert.match((await response.json()).message, /số điện thoại/);
+    }
+    assert.equal(bookingCreateCount, before);
+  });
+  await t.test('local, country-code and formatted phone numbers are accepted', async () => {
+    for (const phone of ['0901234567', '+84901234567', '090 123 4567', '(+84) 90.123.4567']) {
+      const response = await call('/bookings', alice, { ...data, phone });
+      assert.equal(response.status, 201, phone);
+      assert.equal(record.phone, phone);
+    }
+  });
   await t.test('ownership, price and status cannot be supplied by client', async () => {
     assert.equal(
       (
