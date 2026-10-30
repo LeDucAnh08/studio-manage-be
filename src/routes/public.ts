@@ -14,6 +14,7 @@ import Costume from '../models/Costume';
 import { getRentalAvailability, loadRentalHolds } from '../services/rentalAvailability';
 import { vietnamDay } from '../utils/rentalPeriod';
 import { asyncHandler } from '../middleware/asyncHandler';
+import { getPublicPackage, validatePackageId } from '../controllers/packageContentController';
 
 const router = Router();
 
@@ -31,6 +32,7 @@ router.get('/member-intake/:token', (req, res, next) =>
 router.post('/member-intake/:token', (req, res, next) => submitPublicMember(req, res).catch(next));
 
 // List packages (public, used by portfolio pricing section)
+router.get('/packages/:id', validatePackageId, asyncHandler(getPublicPackage));
 router.get('/packages', async (_req: Request, res: Response): Promise<void> => {
   const packages = await Package.find({})
     .select(

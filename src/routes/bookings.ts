@@ -6,6 +6,7 @@ import Package from '../models/Package';
 import User from '../models/User';
 import BookingWorkflow from '../models/BookingWorkflow';
 import { workflowPhotographers } from '../services/workflowPhotographer';
+import { expirePendingBookings } from '../services/bookingExpiry';
 import { protect } from '../middleware/auth';
 import { requireRole } from '../middleware/role';
 import { asyncHandler } from '../middleware/asyncHandler';
@@ -31,8 +32,14 @@ import {
 const router = Router();
 router.use(requireClientPortal);
 router.use(protect);
+router.use(
+  asyncHandler(async (_req, _res, next) => {
+    await expirePendingBookings();
+    next();
+  }),
+);
 const isAdmin = (roles: number[]) => roles.some((role) => role === 0 || role === 1);
-const bookingStatuses = ['pending', 'approved', 'rejected'] as const;
+const bookingStatuses = ['pending', 'approved', 'rejected', 'cancelled'] as const;
 const bookingHandler = (work: (req: Request, res: Response) => Promise<void>) =>
   asyncHandler(async (req, res) => {
     try {

@@ -41,7 +41,9 @@ export interface BookingWorkflowCommand {
 export interface BookingWorkflowDto {
   booking: {
     _id: string;
-    status: 'pending' | 'approved' | 'rejected';
+    status: 'pending' | 'approved' | 'rejected' | 'cancelled';
+    cancelledAt?: string;
+    cancellationReason?: string;
     packageName: string;
     pricePerMember: number;
     members: number;
@@ -231,7 +233,7 @@ export interface WorkflowSummary {
   className?: string;
   shootDate: string | null;
   updatedAt: string;
-  bookingStatus: 'pending' | 'approved' | 'rejected';
+  bookingStatus: 'pending' | 'approved' | 'rejected' | 'cancelled';
   progressStatus?: string;
   payment?: { netReceived: number; totalDue: number; refundDue?: number };
 }

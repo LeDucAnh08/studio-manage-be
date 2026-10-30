@@ -24,6 +24,8 @@ import workflowRoutes from './routes/workflows';
 import rentalRoutes from './routes/rentals';
 import reportRoutes from './routes/reports';
 import photographerRoutes from './routes/photographerAvailability';
+import { startBookingExpiry } from './services/bookingExpiry';
+import { packageMediaDirectory } from './services/packageMedia';
 
 const envFile = '.env';
 dotenv.config({ path: path.resolve(__dirname, '..', envFile) });
@@ -50,6 +52,15 @@ app.use((_req, res, next) => {
   next();
 });
 app.use(express.json({ limit: '100kb' }));
+app.use(
+  '/api/media/packages',
+  express.static(packageMediaDirectory(), {
+    dotfiles: 'deny',
+    index: false,
+    maxAge: '1y',
+    immutable: true,
+  }),
+);
 
 app.use('/api/auth', authRoutes);
 app.use('/api/account-requests', accountRequestRoutes);
@@ -84,6 +95,7 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
 const PORT = Number(process.env.PORT) || 5000;
 
 connectDB().then(() => {
+  startBookingExpiry();
   app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 });
 

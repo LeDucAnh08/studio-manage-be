@@ -105,6 +105,16 @@ test('customer order views filter all pages, retain legacy intake and isolate ea
   const theirs = await (await call('?view=completed', other)).json();
   assert.equal(theirs.pagination.total, 1);
   assert.equal(theirs.data[0].bookingId, String(records[25]._id));
+  const pending = await (await call('?status=pending')).json();
+  assert.equal(pending.pagination.total, 21);
+  assert.ok(pending.data.every((row) => row.bookingStatus === 'pending'));
+  const processing = await (await call('?view=active&status=approved')).json();
+  assert.equal(processing.pagination.total, 1);
+  assert.equal(processing.data[0].bookingId, String(records[0]._id));
+  assert.equal((await (await call('?view=rejected&status=pending')).json()).pagination.total, 0);
+  assert.equal((await (await call('?status=pending', other)).json()).pagination.total, 0);
+  assert.equal((await call('?status=unknown')).status, 400);
+  assert.equal((await call('?status[]=pending')).status, 400);
   assert.equal((await call('?view=unknown')).status, 400);
   assert.equal((await call('?view[]=active')).status, 400);
 });

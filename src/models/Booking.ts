@@ -71,7 +71,13 @@ const bookingSchema = new Schema(
       },
       { _id: false },
     ),
-    status: { type: String, enum: ['pending', 'approved', 'rejected'], default: 'pending' },
+    status: {
+      type: String,
+      enum: ['pending', 'approved', 'rejected', 'cancelled'],
+      default: 'pending',
+    },
+    cancelledAt: Date,
+    cancellationReason: { type: String, trim: true },
     reviewNote: { type: String, default: '' },
     reviewedBy: { type: Schema.Types.ObjectId, ref: 'User' },
     reviewedAt: Date,
@@ -80,6 +86,7 @@ const bookingSchema = new Schema(
   { timestamps: true },
 );
 bookingSchema.index({ status: 1, createdAt: -1 });
+bookingSchema.index({ status: 1, startAt: 1 });
 bookingSchema.index({ client: 1, createdAt: -1 });
 bookingSchema.index({
   'costumeSelections.costumeId': 1,

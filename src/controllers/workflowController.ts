@@ -24,6 +24,7 @@ import {
   scheduleInterval,
 } from '../services/photographerAvailability';
 import { workflowPhotographers } from '../services/workflowPhotographer';
+import { expirePendingBookings } from '../services/bookingExpiry';
 
 type Actor = NonNullable<Request['user']>;
 type ActionBody = Record<string, any> & { action?: string; expectedVersion?: number };
@@ -243,6 +244,8 @@ const toDto = async (booking: any, workflow: IBookingWorkflow | null, actor: Act
     booking: {
       _id: String(booking._id),
       status: booking.status,
+      cancelledAt: booking.cancelledAt,
+      cancellationReason: booking.cancellationReason,
       packageName: booking.packageName,
       pricePerMember: booking.pricePerMember,
       members: booking.members,
@@ -259,7 +262,7 @@ const toDto = async (booking: any, workflow: IBookingWorkflow | null, actor: Act
     workflow: {
       bookingId: String(booking._id),
       version: workflow?.version ?? 0,
-      lifecycle: workflow?.lifecycle ?? 'intake',
+      lifecycle: booking.status === 'cancelled' ? 'cancelled' : (workflow?.lifecycle ?? 'intake'),
       assignedPhotographer,
       assignedSupportPhotographers,
       proposedSchedule:
@@ -327,7 +330,10 @@ const toDto = async (booking: any, workflow: IBookingWorkflow | null, actor: Act
           if (canManage) return true;
           if (clientView) return event.audience === 'client';
           if (isRole(actor, 5)) return event.audience === 'accounting';
-          return event.audience === 'photographer' || event.action === 'photographer.assign';
+          return (
+            event.audience === 'photographer' ||
+            ['photographer.assign', 'booking.expire'].includes(event.action)
+          );
         })
         .map((event: any) => ({ action: event.action, message: event.message, at: event.at })),
       memberEntry: clientView || canManage ? { opened: !!workflow?.memberEntry?.opened } : null,
@@ -347,6 +353,7 @@ const readBooking = async (id: string, actor: Actor) => {
 
 export const getWorkflow = async (req: Request, res: Response): Promise<void> => {
   try {
+    await expirePendingBookings();
     const booking = await readBooking(req.params.id, req.user!);
     const workflow = (await BookingWorkflow.findOne({ booking: booking._id })
       .select('+memberEntry.tokenHash')
@@ -360,8 +367,16 @@ export const getWorkflow = async (req: Request, res: Response): Promise<void> =>
 
 export const listWorkflows = async (req: Request, res: Response): Promise<void> => {
   try {
+    await expirePendingBookings();
     const actor = req.user!;
     const view = req.query.view;
+    const status = req.query.status;
+    if (
+      status !== undefined &&
+      (typeof status !== 'string' ||
+        !['pending', 'approved', 'rejected', 'cancelled'].includes(status))
+    )
+      throw new WorkflowProblem(400, 'Trạng thái tiếp nhận không hợp lệ');
     if (
       view !== undefined &&
       (typeof view !== 'string' || !['active', 'completed', 'cancelled', 'rejected'].includes(view))
@@ -398,14 +413,19 @@ export const listWorkflows = async (req: Request, res: Response): Promise<void> 
       if (!clauses.length) throw new WorkflowProblem(403, 'Forbidden: insufficient role');
       bookingFilter = { $or: clauses };
     }
+    const constraints: Record<string, unknown>[] = [];
     if (view === 'rejected') bookingFilter.status = 'rejected';
     else if (view) {
       const closed = await BookingWorkflow.find({
         lifecycle: view === 'active' ? { $in: ['completed', 'cancelled'] } : view,
       }).distinct('booking');
-      bookingFilter._id = view === 'active' ? { $nin: closed } : { $in: closed };
-      if (view === 'active') bookingFilter.status = { $ne: 'rejected' };
+      if (view === 'cancelled')
+        constraints.push({ $or: [{ status: 'cancelled' }, { _id: { $in: closed } }] });
+      else bookingFilter._id = view === 'active' ? { $nin: closed } : { $in: closed };
+      if (view === 'active') bookingFilter.status = { $nin: ['rejected', 'cancelled'] };
     }
+    if (status) constraints.push({ status });
+    if (constraints.length) bookingFilter.$and = constraints;
     const [bookings, total] = await Promise.all([
       Booking.find(bookingFilter)
         .sort({ updatedAt: -1, _id: -1 })
@@ -428,7 +448,7 @@ export const listWorkflows = async (req: Request, res: Response): Promise<void> 
       return {
         bookingId: String(booking._id),
         version: workflow?.version ?? 0,
-        lifecycle: workflow?.lifecycle ?? 'intake',
+        lifecycle: booking.status === 'cancelled' ? 'cancelled' : (workflow?.lifecycle ?? 'intake'),
         assignedPhotographer: assignments.get(String(booking._id))?.assignedPhotographer ?? null,
         assignedSupportPhotographers:
           assignments.get(String(booking._id))?.assignedSupportPhotographers ?? [],
@@ -890,6 +910,7 @@ const runAction = async (
 ) => {
   const action = body.action;
   if (typeof action !== 'string') throw new WorkflowProblem(400, 'Action is required');
+  await expirePendingBookings();
   const actionFingerprint = hash({ ...body, expectedVersion: undefined });
   let memberToken: string | undefined;
   let changed = false;
@@ -926,6 +947,8 @@ const runAction = async (
         isRole(actor, 3) &&
         !!workflow?.resources.photographers.some((id: any) => String(id) === String(actor._id)));
     requireActor(canUseAction);
+    if (booking.status === 'cancelled')
+      throw new WorkflowProblem(409, booking.cancellationReason || 'Yêu cầu đã hủy.');
     const alreadyDone = workflow?.idempotency.find((entry: any) => entry.key === scopedKey);
     if (alreadyDone) {
       if (alreadyDone.fingerprint !== actionFingerprint)

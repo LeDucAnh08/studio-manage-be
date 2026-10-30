@@ -3,16 +3,20 @@
   "version": "1.0.0",
   "description": "Studio yearbook photography management - backend",
   "license": "UNLICENSED",
+  "resolutions": {
+    "**/@types/express": "^4.17.21"
+  },
   "main": "dist/app.js",
   "scripts": {
     "dev": "nodemon --exec ts-node src/app.ts",
     "start": "node dist/app.js",
     "build": "tsc",
     "check": "tsc --noEmit && prettier --check \"src/**/*.{ts,json}\"",
-    "test": "node --test tests/client-bookings.cjs tests/account-requests.cjs tests/costume-catalog.cjs tests/rental-access.cjs tests/phase1-mongo-integration.cjs tests/booking-costumes.cjs tests/customer-order-views.cjs tests/photographer-assignment.cjs",
-    "test:contract": "node --test tests/client-bookings.cjs tests/account-requests.cjs tests/costume-catalog.cjs tests/rental-access.cjs",
-    "test:integration": "node --test tests/phase1-mongo-integration.cjs tests/booking-costumes.cjs tests/customer-order-views.cjs tests/photographer-assignment.cjs",
+    "test": "node --test tests/client-bookings.cjs tests/account-requests.cjs tests/costume-catalog.cjs tests/rental-access.cjs tests/phase1-mongo-integration.cjs tests/booking-costumes.cjs tests/customer-order-views.cjs tests/photographer-assignment.cjs tests/booking-expiry.cjs tests/package-content.cjs",
+    "test:contract": "node --test tests/client-bookings.cjs tests/account-requests.cjs tests/costume-catalog.cjs tests/rental-access.cjs tests/package-content.cjs",
+    "test:integration": "node --test tests/phase1-mongo-integration.cjs tests/booking-costumes.cjs tests/customer-order-views.cjs tests/photographer-assignment.cjs tests/booking-expiry.cjs",
     "test:booking-costumes": "node --test tests/booking-costumes.cjs",
+    "test:package-content": "node --test tests/package-content.cjs",
     "seed": "ts-node src/utils/seed.ts",
     "migrate:customer-season": "ts-node src/utils/migrateCustomerSeason.ts",
     "migrate:transaction-season": "ts-node src/utils/migrateTransactionSeason.ts",
@@ -29,13 +33,16 @@
     "express-validator": "^7.1.0",
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.4.1",
-    "pdfkit": "^0.18.0"
+    "multer": "^2.5.0",
+    "pdfkit": "^0.18.0",
+    "sharp": "^0.35.5"
   },
   "devDependencies": {
     "@types/bcryptjs": "^2.4.6",
     "@types/cors": "^2.8.17",
     "@types/express": "^4.17.21",
     "@types/jsonwebtoken": "^9.0.6",
+    "@types/multer": "^2.3.0",
     "@types/node": "^20.14.0",
     "@types/pdfkit": "^0.17.5",
     "nodemon": "^3.1.4",
