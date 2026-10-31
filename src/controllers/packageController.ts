@@ -3,6 +3,16 @@ import Package from '../models/Package';
 import { sendResponse } from '../utils/response';
 import { deletePackageImages } from '../services/packageMedia';
 
+const validDepositSettings = (data: Record<string, unknown>) =>
+  (data.depositPercent === undefined ||
+    (Number.isSafeInteger(data.depositPercent) &&
+      Number(data.depositPercent) >= 1 &&
+      Number(data.depositPercent) <= 100)) &&
+  (data.depositHoldHours === undefined ||
+    (Number.isSafeInteger(data.depositHoldHours) &&
+      Number(data.depositHoldHours) >= 1 &&
+      Number(data.depositHoldHours) <= 168));
+
 export const getAll = async (_req: Request, res: Response): Promise<void> => {
   const packages = await Package.find()
     .select('-details')
@@ -23,6 +33,15 @@ export const getOne = async (req: Request, res: Response): Promise<void> => {
 
 export const create = async (req: Request, res: Response): Promise<void> => {
   const data = { ...req.body };
+  if (!validDepositSettings(data)) {
+    sendResponse(
+      res,
+      400,
+      false,
+      'Cọc phải từ 1–100%, thời gian giữ từ 1–168 giờ, dùng số nguyên.',
+    );
+    return;
+  }
   delete data.details;
   delete data.detailsVersion;
   const pkg = await Package.create(data);
@@ -31,6 +50,15 @@ export const create = async (req: Request, res: Response): Promise<void> => {
 
 export const update = async (req: Request, res: Response): Promise<void> => {
   const data = { ...req.body };
+  if (!validDepositSettings(data)) {
+    sendResponse(
+      res,
+      400,
+      false,
+      'Cọc phải từ 1–100%, thời gian giữ từ 1–168 giờ, dùng số nguyên.',
+    );
+    return;
+  }
   delete data.details;
   delete data.detailsVersion;
   // Content and managed media can only be changed through the validated content endpoint.

@@ -31,6 +31,23 @@ const bookingSchema = new Schema(
     packageName: { type: String, required: true },
     pricePerMember: { type: Number, required: true },
     packageSnapshot: { type: packageSnapshotSchema, required: true },
+    packageAgreement: {
+      type: new Schema(
+        {
+          version: { type: Number, required: true },
+          total: { type: Number, required: true },
+          depositRequired: { type: Number, required: true },
+          depositPercent: { type: Number, required: true },
+          holdHours: { type: Number, required: true },
+          detailsVersion: { type: Number, required: true },
+          acceptedAt: { type: Date, required: true },
+          terms: [String],
+          editingTerms: [String],
+        },
+        { _id: false },
+      ),
+      default: undefined,
+    },
     members: { type: Number, required: true },
     className: { type: String, trim: true },
     school: { type: String, trim: true },

@@ -8,7 +8,7 @@ import { deletePackageImages, storePackageImage } from '../services/packageMedia
 import type { PackageImage } from '../types/packageContent';
 
 const PUBLIC_FIELDS =
-  'name pricePerMember duration crewRatio editingScope deliveryDays studentsPerCrew description costumes isPopular details detailsVersion';
+  'name pricePerMember depositPercent depositHoldHours updatedAt duration crewRatio editingScope deliveryDays studentsPerCrew description costumes isPopular details detailsVersion';
 
 export const validatePackageId: RequestHandler = (req, res, next) => {
   if (!mongoose.isObjectIdOrHexString(req.params.id)) {

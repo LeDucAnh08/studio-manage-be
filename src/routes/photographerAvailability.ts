@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { isValidObjectId } from 'mongoose';
+import { isValidObjectId, Types } from 'mongoose';
 import { protect } from '../middleware/auth';
 import { requireRole } from '../middleware/role';
 import Booking from '../models/Booking';
@@ -53,7 +53,12 @@ router.get(
       200,
       true,
       'OK',
-      await photographerAvailability(interval, { excludeSchedule }),
+      await photographerAvailability(interval, {
+        excludeSchedule,
+        excludeBooking: req.query.bookingId
+          ? new Types.ObjectId(String(req.query.bookingId))
+          : undefined,
+      }),
     );
   }),
 );
@@ -118,6 +123,21 @@ const saveBlock = handle(async (req, res) => {
         409,
         `Đã có lịch chụp ${conflict.startTime ?? '?'}–${conflict.endTime ?? '?'}; hãy xử lý lịch chụp trước.`,
       );
+    const holds = await BookingWorkflow.find({
+      'packageReservation.status': 'held',
+      'packageReservation.expiresAt': { $gt: new Date() },
+      'packageReservation.photographers': photographer,
+    })
+      .select('quote.proposedSchedule')
+      .session(session)
+      .lean();
+    if (
+      holds.some((hold: any) => {
+        const range = hold.quote?.proposedSchedule && scheduleInterval(hold.quote.proposedSchedule);
+        return range && intervalsConflict(interval, range);
+      })
+    )
+      throw new WorkflowProblem(409, 'Thợ đang được giữ lịch tạm cho đơn chờ đặt cọc.');
     if (existing) {
       existing.startAt = new Date(interval.start);
       existing.endAt = new Date(interval.end);

@@ -326,7 +326,27 @@ export const listRentals = async (req: Request, res: Response): Promise<void> =>
       'Phân trang không hợp lệ.',
       400,
     );
-    const filter = roles(req, 6) ? { client: req.user!._id } : {};
+    const view = req.query.view ?? '';
+    assert(
+      typeof view === 'string' &&
+        ['', 'active', 'completed', 'cancelled', 'rejected'].includes(view),
+      'Bộ lọc trạng thái không hợp lệ.',
+      400,
+    );
+    const filter: Record<string, unknown> = roles(req, 6) ? { client: req.user!._id } : {};
+    if (view === 'active')
+      filter.status = {
+        $in: [
+          'requested',
+          'quoting',
+          'awaiting_deposit',
+          'ready_to_confirm',
+          'confirmed',
+          'checked_out',
+          'returned',
+        ],
+      };
+    else if (view) filter.status = view;
     const [rows, total] = await Promise.all([
       RentalOrder.find(filter)
         .sort({ updatedAt: -1 })

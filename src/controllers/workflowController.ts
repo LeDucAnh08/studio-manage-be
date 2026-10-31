@@ -80,8 +80,9 @@ const quoteTotal = (workflow: IBookingWorkflow): number =>
 const settled = (workflow: IBookingWorkflow): boolean =>
   !!workflow.quote && netReceived(workflow) === quoteTotal(workflow);
 const isAppliedFinancialChange = (workflow: IBookingWorkflow): boolean =>
-  workflow.changeRequest?.status === 'applied' &&
-  ['change', 'cancel'].includes(workflow.changeRequest.kind);
+  workflow.packageReservation?.status === 'expired' ||
+  (workflow.changeRequest?.status === 'applied' &&
+    ['change', 'cancel'].includes(workflow.changeRequest.kind));
 const paymentReadiness = () => {
   const paymentInstructions = {
     bankName: process.env.PAYMENT_BANK_NAME?.trim() ?? '',
@@ -248,6 +249,7 @@ const toDto = async (booking: any, workflow: IBookingWorkflow | null, actor: Act
       cancellationReason: booking.cancellationReason,
       packageName: booking.packageName,
       pricePerMember: booking.pricePerMember,
+      packageAgreement: financialView ? booking.packageAgreement : undefined,
       members: booking.members,
       className: booking.className,
       school: booking.school,
@@ -261,6 +263,7 @@ const toDto = async (booking: any, workflow: IBookingWorkflow | null, actor: Act
     },
     workflow: {
       bookingId: String(booking._id),
+      packageReservation: workflow?.packageReservation ?? null,
       version: workflow?.version ?? 0,
       lifecycle: booking.status === 'cancelled' ? 'cancelled' : (workflow?.lifecycle ?? 'intake'),
       assignedPhotographer,
@@ -647,6 +650,7 @@ const validateResources = async (
     scheduleInterval({ shootDate, startTime: proposed.startTime, endTime: proposed.endTime })!,
     session,
     excludeSchedule,
+    booking._id,
   );
 
   const seen = new Set<string>();
@@ -734,9 +738,12 @@ const ensureWorkflow = (booking: any, workflow: IBookingWorkflow | null): IBooki
 
 const currentTotal = (workflow: IBookingWorkflow) => quoteTotal(workflow);
 const currentPayable = (workflow: IBookingWorkflow): number =>
-  isAppliedFinancialChange(workflow) && Number.isSafeInteger(workflow.changeRequest?.finalPayable)
-    ? workflow.changeRequest!.finalPayable
-    : quoteTotal(workflow);
+  workflow.packageReservation?.status === 'expired'
+    ? 0
+    : isAppliedFinancialChange(workflow) &&
+        Number.isSafeInteger(workflow.changeRequest?.finalPayable)
+      ? workflow.changeRequest!.finalPayable
+      : quoteTotal(workflow);
 
 const logEvent = (
   workflow: IBookingWorkflow,
@@ -799,6 +806,65 @@ const createLinkedCustomer = async (
     ids.push(student._id);
   }
   workflow.customer = customer._id;
+};
+
+const canCollectMembers = (workflow: IBookingWorkflow) =>
+  !!workflow.quote?.acceptedAt &&
+  (workflow.packageReservation
+    ? workflow.packageReservation.status === 'confirmed' && workflow.lifecycle === 'confirmed'
+    : !workflow.resources.schedule &&
+      ['awaiting_deposit', 'ready_to_confirm'].includes(workflow.lifecycle));
+
+const syncPackageMembers = async (
+  booking: any,
+  workflow: IBookingWorkflow,
+  session: ClientSession,
+  oldIds: string[] = [],
+) => {
+  if (!workflow.customer || !booking.packageAgreement) return;
+  const retained: string[] = [];
+  for (const member of workflow.members) {
+    const data = {
+      customer: workflow.customer,
+      name: member.name,
+      gender: member.gender,
+      height: member.height,
+      weight: member.weight,
+      notes: member.contact || '',
+      costumes: member.costumeSizes.map((item: any) => item.costumeId),
+      costumeSizes: member.costumeSizes.map((item: any) => ({
+        costume: item.costumeId,
+        size: item.size,
+      })),
+    };
+    if (member.student) {
+      await Student.updateOne(
+        { _id: member.student, customer: workflow.customer },
+        { $set: data },
+        { session, runValidators: true },
+      );
+    } else {
+      const [student] = await Student.create([data], { session });
+      member.student = student._id;
+    }
+    retained.push(String(member.student));
+  }
+  const removed = oldIds.filter((id) => !retained.includes(id));
+  if (removed.length)
+    await Student.deleteMany({ _id: { $in: removed }, customer: workflow.customer }).session(
+      session,
+    );
+  await Customer.updateOne(
+    { _id: workflow.customer },
+    {
+      $set: {
+        total: workflow.members.length,
+        totalMale: workflow.members.filter((member) => member.gender === 'male').length,
+        totalFemale: workflow.members.filter((member) => member.gender === 'female').length,
+      },
+    },
+    { session },
+  );
 };
 
 const applyScheduleChange = async (
@@ -902,6 +968,93 @@ const amendAcceptedQuote = (workflow: IBookingWorkflow, request: any, actor: Act
   workflow.quote = next as any;
 };
 
+const confirmWorkflowResources = async (
+  booking: any,
+  workflow: IBookingWorkflow,
+  actor: Actor,
+  session: ClientSession,
+  requestedSchedule: any,
+  costumes: Array<Record<string, any>>,
+) => {
+  const resourceValues = await validateResources(
+    booking,
+    {
+      ...requestedSchedule,
+      photographerIds: requestedSchedule.photographerIds ?? [
+        requestedSchedule.leadPhotographer,
+        ...(requestedSchedule.supportPhotographers ?? []),
+      ],
+    },
+    costumes,
+    session,
+  );
+  if (
+    workflow.assignedPhotographer &&
+    String(workflow.assignedPhotographer) !== resourceValues.photographerIds[0]
+  )
+    throw new WorkflowProblem(
+      409,
+      'Thợ phụ trách phải là thợ chính. Hãy cập nhật phân công trước khi xác nhận.',
+    );
+  workflow.assignedPhotographer = new Types.ObjectId(resourceValues.photographerIds[0]);
+  workflow.assignedSupportPhotographers = resourceValues.photographerIds
+    .slice(1)
+    .map((id: string) => new Types.ObjectId(id));
+  await createLinkedCustomer(booking, workflow, session);
+  const [schedule] = await Schedule.create(
+    [
+      {
+        customer: workflow.customer,
+        package: booking.package,
+        costumes: costumes.map((item: any) => item.costumeId),
+        costumeReservations: costumes.map((item: any) => ({
+          costume: item.costumeId,
+          size: item.size,
+          quantity: item.quantity,
+          receiveDate: item.receiveDate,
+          returnDate: item.returnDate,
+        })),
+        shootDate: resourceValues.shootDate,
+        startTime: resourceValues.startTime,
+        endTime: resourceValues.endTime,
+        location: resourceValues.location,
+        leadPhotographer: new Types.ObjectId(String(resourceValues.photographerIds[0])),
+        supportPhotographers: resourceValues.photographerIds
+          .slice(1)
+          .map((id: string) => new Types.ObjectId(String(id))),
+        bookedBy: actor._id,
+        status: 'confirmed',
+        notes: booking.note,
+        workflowBooking: booking._id,
+        season: null,
+      },
+    ],
+    { session },
+  );
+  workflow.resources.schedule = schedule._id;
+  if (booking.costumeHold && ['approved', 'temporary'].includes(booking.costumeHold.status)) {
+    booking.costumeHold.status = 'transferred';
+    await booking.save({ session });
+  }
+  workflow.resources.photographers = resourceValues.photographerIds.map(
+    (id: string) => new Types.ObjectId(String(id)),
+  ) as any;
+  workflow.resources.costumes = costumes as any;
+  workflow.memberEntry.opened = false;
+  workflow.memberEntry.closedAt = new Date();
+  workflow.lifecycle = 'confirmed';
+  logEvent(
+    workflow,
+    actor,
+    'resources.confirm',
+    'Studio confirmed the schedule and reserved photographers and costumes.',
+    'client',
+  );
+
+  if (workflow.packageReservation?.status === 'held')
+    workflow.packageReservation.status = 'confirmed';
+};
+
 const runAction = async (
   bookingId: string,
   actor: Actor,
@@ -947,7 +1100,14 @@ const runAction = async (
         isRole(actor, 3) &&
         !!workflow?.resources.photographers.some((id: any) => String(id) === String(actor._id)));
     requireActor(canUseAction);
-    if (booking.status === 'cancelled')
+    if (
+      booking.status === 'cancelled' &&
+      !(
+        action === 'payment.record' &&
+        body.kind === 'refund' &&
+        workflow?.packageReservation?.status === 'expired'
+      )
+    )
       throw new WorkflowProblem(409, booking.cancellationReason || 'Yêu cầu đã hủy.');
     const alreadyDone = workflow?.idempotency.find((entry: any) => entry.key === scopedKey);
     if (alreadyDone) {
@@ -981,6 +1141,87 @@ const runAction = async (
     };
 
     switch (action) {
+      case 'package.approve': {
+        requireAdmin();
+        if (
+          !booking.packageAgreement ||
+          booking.status !== 'pending' ||
+          booking.startAt <= new Date()
+        )
+          throw new WorkflowProblem(409, 'Yêu cầu đã được xử lý hoặc thời gian chụp đã qua.');
+        const team = [
+          workflow.assignedPhotographer,
+          ...(workflow.assignedSupportPhotographers ?? []),
+        ]
+          .filter(Boolean)
+          .map(String);
+        const perCrew = booking.packageSnapshot.studentsPerCrew;
+        const minimum = perCrew && perCrew > 0 ? Math.ceil(booking.members / perCrew) : 1;
+        if (team.length < minimum)
+          throw new WorkflowProblem(
+            409,
+            `Cần phân công ít nhất ${minimum} thợ chụp trước khi duyệt giữ lịch.`,
+          );
+        await ensurePhotographersAvailable(
+          team,
+          { start: booking.startAt.getTime(), end: booking.endAt.getTime() },
+          session,
+          undefined,
+          booking._id,
+        );
+        const agreement = booking.packageAgreement;
+        const days = booking.packageSnapshot.deliveryDays || 14;
+        const time = (date: Date) =>
+          new Date(date.getTime() + 7 * 3600000).toISOString().slice(11, 16);
+        workflow.quote = {
+          version: 1,
+          currency: 'VND',
+          lines: [
+            {
+              label: `Gói ${booking.packageName}`,
+              quantity: booking.members,
+              unitPrice: booking.pricePerMember,
+            },
+          ],
+          depositRequired: agreement.depositRequired,
+          proposedSchedule: {
+            shootDate: dayStart(booking.startAt),
+            startTime: time(booking.startAt),
+            endTime: time(booking.endAt),
+            location: booking.location,
+          },
+          delivery: {
+            targetDays: days,
+            targetDate: new Date(dayStart(booking.startAt).getTime() + days * 86400000),
+          },
+          editingTerms: agreement.editingTerms,
+          terms: agreement.terms,
+          paymentInstructions: paymentReadiness().paymentInstructions,
+          proposedBy: actor._id,
+          proposedAt: new Date(),
+          acceptedBy: booking.client,
+          acceptedAt: agreement.acceptedAt,
+        };
+        workflow.packageReservation = {
+          status: 'held',
+          expiresAt: new Date(
+            Math.min(Date.now() + agreement.holdHours * 3600000, booking.startAt.getTime()),
+          ),
+          photographers: team.map((id) => new Types.ObjectId(id)),
+        };
+        workflow.lifecycle = 'awaiting_deposit';
+        booking.status = 'approved';
+        booking.reviewedAt = new Date();
+        booking.reviewedBy = actor._id;
+        booking.reviewNote =
+          cleanText(body.note ?? '', 2000, false) ||
+          'Studio đã duyệt và giữ lịch tạm theo thông tin gói đã xác nhận.';
+        const message = `Đã duyệt gói chụp. Giữ lịch tạm đến ${workflow.packageReservation.expiresAt.toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' })}; vui lòng đặt đủ cọc trong thời hạn.`;
+        booking.events.push({ audience: 'client', message }, { audience: 'admin', message });
+        await booking.save({ session });
+        logEvent(workflow, actor, action, message, 'client');
+        break;
+      }
       case 'photographer.assign': {
         requireAdmin();
         if (
@@ -1027,14 +1268,26 @@ const runAction = async (
           : (linked?.supportPhotographers ?? workflow.assignedSupportPhotographers ?? [])
               .map(String)
               .filter((id: string) => id !== nextId);
+        const perCrew = booking.packageSnapshot.studentsPerCrew;
+        if (
+          booking.packageAgreement &&
+          workflow.packageReservation &&
+          1 + supports.length < (perCrew && perCrew > 0 ? Math.ceil(booking.members / perCrew) : 1)
+        )
+          throw new WorkflowProblem(409, 'Ekip mới chưa đủ số thợ theo quy mô gói.');
         await ensurePhotographersAvailable(
           [nextId, ...supports],
           range,
           session,
           linked?._id as Types.ObjectId | undefined,
+          booking._id,
         );
         workflow.assignedPhotographer = new Types.ObjectId(nextId);
         workflow.assignedSupportPhotographers = supports.map((id) => new Types.ObjectId(id));
+        if (workflow.packageReservation?.status === 'held')
+          workflow.packageReservation.photographers = [nextId, ...supports].map(
+            (id) => new Types.ObjectId(id),
+          );
         // Also conflict with concurrent intake rejection and refresh the intake list ordering.
         booking.updatedAt = new Date();
         await booking.save({ session });
@@ -1051,12 +1304,17 @@ const runAction = async (
           .select('name username')
           .session(session)
           .lean();
-        const message = `Thợ phụ trách: ${person?.name || person?.username}. Thợ hỗ trợ: ${supportPeople.map((row) => row.name || row.username).join(', ') || 'Không có'}. ${linked ? 'Đã cập nhật ekip của lịch.' : 'Chưa giữ khung giờ chụp.'}`;
+        const message = `Thợ phụ trách: ${person?.name || person?.username}. Thợ hỗ trợ: ${supportPeople.map((row) => row.name || row.username).join(', ') || 'Không có'}. ${linked ? 'Đã cập nhật ekip của lịch.' : workflow.packageReservation?.status === 'held' ? 'Đã cập nhật ekip giữ lịch tạm.' : 'Chưa giữ khung giờ chụp.'}`;
         logEvent(workflow, actor, action, message, 'client');
         break;
       }
       case 'quote.propose': {
         requireAdmin();
+        if (booking.packageAgreement)
+          throw new WorkflowProblem(
+            409,
+            'Đơn theo gói dùng giá đã xác nhận; thay đổi phải được khách đồng ý qua yêu cầu thay đổi.',
+          );
         requireApproved();
         if (workflow.payments.length || workflow.quote?.acceptedAt)
           throw new WorkflowProblem(
@@ -1099,9 +1357,10 @@ const runAction = async (
       case 'payment.record': {
         requireActor(isAdmin || isRole(actor, 5));
         const cancellation =
-          workflow.lifecycle === 'cancelled' &&
-          workflow.changeRequest?.kind === 'cancel' &&
-          workflow.changeRequest.status === 'applied';
+          workflow.packageReservation?.status === 'expired' ||
+          (workflow.lifecycle === 'cancelled' &&
+            workflow.changeRequest?.kind === 'cancel' &&
+            workflow.changeRequest.status === 'applied');
         const finalizedChange = isAppliedFinancialChange(workflow);
         if (
           !workflow.quote?.acceptedAt ||
@@ -1122,6 +1381,12 @@ const runAction = async (
             'A client-accepted quote is required before recording money',
           );
         const kind = body.kind;
+        if (
+          kind !== 'refund' &&
+          workflow.packageReservation?.status === 'held' &&
+          workflow.packageReservation.expiresAt <= new Date()
+        )
+          throw new WorkflowProblem(409, 'Đã hết hạn giữ lịch. Hãy tải lại hồ sơ.');
         const amount = Number(body.amount);
         const method = body.method;
         const receivedAt = body.receivedAt ? new Date(body.receivedAt) : new Date();
@@ -1157,9 +1422,7 @@ const runAction = async (
           );
         if (
           kind === 'refund' &&
-          (!finalizedChange ||
-            amount >
-              Math.max(0, net - (workflow.changeRequest?.finalPayable ?? quoteTotal(workflow))))
+          (!finalizedChange || amount > Math.max(0, net - currentPayable(workflow)))
         )
           throw new WorkflowProblem(
             409,
@@ -1209,6 +1472,25 @@ const runAction = async (
         )
           workflow.lifecycle = 'ready_to_confirm';
         if (
+          booking.packageAgreement &&
+          workflow.packageReservation?.status === 'held' &&
+          netReceived(workflow) >= workflow.quote.depositRequired
+        ) {
+          if (workflow.packageReservation.expiresAt <= new Date())
+            throw new WorkflowProblem(409, 'Đã hết hạn giữ lịch. Hãy tải lại hồ sơ.');
+          await confirmWorkflowResources(
+            booking,
+            workflow,
+            actor,
+            session,
+            {
+              ...workflow.quote.proposedSchedule.toObject(),
+              photographerIds: workflow.packageReservation.photographers.map(String),
+            },
+            [],
+          );
+        }
+        if (
           !cancellation &&
           workflow.resources.schedule &&
           settled(workflow) &&
@@ -1230,7 +1512,7 @@ const runAction = async (
             409,
             'Client acceptance and the required net deposit are needed before confirming resources',
           );
-        if (workflow.members.length !== booking.members)
+        if (!booking.packageAgreement && workflow.members.length !== booking.members)
           throw new WorkflowProblem(
             409,
             `Member intake is incomplete: ${workflow.members.length} of ${booking.members} members`,
@@ -1248,78 +1530,40 @@ const runAction = async (
             'Schedule differs from the client-accepted quote; use the change request flow',
           );
         const costumes = parseCostumeReservations(body.costumes ?? [], booking, workflow);
-        const resourceValues = await validateResources(
+        await confirmWorkflowResources(
           booking,
-          {
-            ...requestedSchedule,
-            photographerIds: requestedSchedule.photographerIds ?? [
-              requestedSchedule.leadPhotographer,
-              ...(requestedSchedule.supportPhotographers ?? []),
-            ],
-          },
-          costumes,
+          workflow,
+          actor,
           session,
+          requestedSchedule,
+          costumes,
         );
+        break;
+      }
+      case 'resources.costumes': {
+        requireAdmin();
         if (
-          workflow.assignedPhotographer &&
-          String(workflow.assignedPhotographer) !== resourceValues.photographerIds[0]
+          !booking.packageAgreement ||
+          workflow.lifecycle !== 'confirmed' ||
+          !workflow.resources.schedule
         )
           throw new WorkflowProblem(
             409,
-            'Thợ phụ trách phải là thợ chính. Hãy cập nhật phân công trước khi xác nhận.',
+            'Chỉ chuẩn bị trang phục cho lịch gói đã chốt, trước khi chụp.',
           );
-        workflow.assignedPhotographer = new Types.ObjectId(resourceValues.photographerIds[0]);
-        workflow.assignedSupportPhotographers = resourceValues.photographerIds
-          .slice(1)
-          .map((id: string) => new Types.ObjectId(id));
-        await createLinkedCustomer(booking, workflow, session);
-        const [schedule] = await Schedule.create(
-          [
-            {
-              customer: workflow.customer,
-              package: booking.package,
-              costumes: costumes.map((item: any) => item.costumeId),
-              costumeReservations: costumes.map((item: any) => ({
-                costume: item.costumeId,
-                size: item.size,
-                quantity: item.quantity,
-                receiveDate: item.receiveDate,
-                returnDate: item.returnDate,
-              })),
-              shootDate: resourceValues.shootDate,
-              startTime: resourceValues.startTime,
-              endTime: resourceValues.endTime,
-              location: resourceValues.location,
-              leadPhotographer: new Types.ObjectId(String(resourceValues.photographerIds[0])),
-              supportPhotographers: resourceValues.photographerIds
-                .slice(1)
-                .map((id: string) => new Types.ObjectId(String(id))),
-              bookedBy: actor._id,
-              status: 'confirmed',
-              notes: booking.note,
-              workflowBooking: booking._id,
-              season: null,
-            },
-          ],
-          { session },
+        const costumes = parseCostumeReservations(body.costumes, booking, workflow);
+        await applyScheduleChange(
+          booking,
+          workflow,
+          { schedule: workflow.quote!.proposedSchedule.toObject(), costumes },
+          actor,
+          session,
         );
-        workflow.resources.schedule = schedule._id;
-        if (booking.costumeHold && ['approved', 'temporary'].includes(booking.costumeHold.status)) {
-          booking.costumeHold.status = 'transferred';
-          await booking.save({ session });
-        }
-        workflow.resources.photographers = resourceValues.photographerIds.map(
-          (id: string) => new Types.ObjectId(String(id)),
-        ) as any;
-        workflow.resources.costumes = costumes as any;
-        workflow.memberEntry.opened = false;
-        workflow.memberEntry.closedAt = new Date();
-        workflow.lifecycle = 'confirmed';
         logEvent(
           workflow,
           actor,
           action,
-          'Studio confirmed the schedule and reserved photographers and costumes.',
+          'Studio đã cập nhật trang phục chuẩn bị cho buổi chụp.',
           'client',
         );
         break;
@@ -1341,6 +1585,11 @@ const runAction = async (
         if (!workflow.resources.schedule || !allowed[workflow.lifecycle]?.includes(nextStatus))
           throw new WorkflowProblem(409, 'Progress update does not follow the current lifecycle');
         if (nextStatus === 'shooting') {
+          if (booking.packageAgreement && workflow.members.length !== booking.members)
+            throw new WorkflowProblem(
+              409,
+              'Cần đủ danh sách thành viên trước khi bắt đầu buổi chụp.',
+            );
           await validateResources(
             booking,
             {
@@ -1609,6 +1858,8 @@ const runAction = async (
           }
           workflow.memberEntry.opened = false;
           workflow.lifecycle = 'cancelled';
+          if (workflow.packageReservation?.status === 'held')
+            workflow.packageReservation.status = 'released';
           if (booking.costumeHold && booking.costumeHold.status !== 'transferred') {
             booking.costumeHold.status = 'released';
             booking.costumeHold.releasedAt = new Date();
@@ -1616,10 +1867,43 @@ const runAction = async (
             await booking.save({ session });
           }
         } else {
+          if (workflow.packageReservation?.status === 'held' && request.proposed?.schedule) {
+            const range = scheduleInterval(request.proposed.schedule);
+            if (!range || range.start <= Date.now())
+              throw new WorkflowProblem(409, 'Khung giờ mới không hợp lệ.');
+            await ensurePhotographersAvailable(
+              workflow.packageReservation.photographers.map(String),
+              range,
+              session,
+              undefined,
+              booking._id,
+            );
+            workflow.packageReservation.expiresAt = new Date(
+              Math.min(workflow.packageReservation.expiresAt.getTime(), range.start),
+            );
+          }
           if (workflow.resources.schedule)
             await applyScheduleChange(booking, workflow, request.proposed, actor, session);
           amendAcceptedQuote(workflow, request, actor);
           workflow.lifecycle = request.previousLifecycle ?? 'confirmed';
+          if (
+            workflow.packageReservation?.status === 'held' &&
+            netReceived(workflow) >= workflow.quote!.depositRequired
+          ) {
+            if (workflow.packageReservation.expiresAt <= new Date())
+              throw new WorkflowProblem(409, 'Đã hết hạn giữ lịch. Hãy tải lại hồ sơ.');
+            await confirmWorkflowResources(
+              booking,
+              workflow,
+              actor,
+              session,
+              {
+                ...workflow.quote!.proposedSchedule.toObject(),
+                photographerIds: workflow.packageReservation.photographers.map(String),
+              },
+              [],
+            );
+          }
         }
         request.status = 'applied';
         logEvent(
@@ -1675,11 +1959,7 @@ const runAction = async (
           isOwner || isAdmin,
           'Only the booking owner or studio admin can open member intake',
         );
-        if (
-          !workflow.quote?.acceptedAt ||
-          workflow.resources.schedule ||
-          !['awaiting_deposit', 'ready_to_confirm'].includes(workflow.lifecycle)
-        )
+        if (!canCollectMembers(workflow))
           throw new WorkflowProblem(
             409,
             'Member intake can be opened after quote acceptance and before confirmation',
@@ -1722,6 +2002,23 @@ const runAction = async (
     workflowResult = workflow;
   });
   return { booking: bookingResult, workflow: workflowResult, changed, memberToken };
+};
+
+export const approvePackageBooking = async (bookingId: string, actor: Actor, note: string) => {
+  if (!workflowEnabled())
+    throw new WorkflowProblem(
+      503,
+      'Luồng đặt gói cần bật xử lý giao dịch trước khi duyệt giữ lịch.',
+    );
+  const workflow: any = await BookingWorkflow.findOne({ booking: bookingId })
+    .select('version')
+    .lean();
+  return runAction(
+    bookingId,
+    actor,
+    { action: 'package.approve', expectedVersion: workflow?.version ?? 0, note },
+    `package-approve-${bookingId}`,
+  );
 };
 
 export const executeWorkflowAction = async (req: Request, res: Response): Promise<void> => {
@@ -1813,10 +2110,9 @@ export const replaceWorkflowMembers = async (req: Request, res: Response): Promi
           'Workflow changed. Refresh and retry with the current version.',
         );
       if (
-        !workflow.quote?.acceptedAt ||
-        workflow.resources.schedule ||
+        !canCollectMembers(workflow) ||
         workflow.memberEntry?.opened ||
-        !['awaiting_deposit', 'ready_to_confirm'].includes(workflow.lifecycle)
+        booking.status !== 'approved'
       ) {
         throw new WorkflowProblem(
           409,
@@ -1900,6 +2196,9 @@ export const replaceWorkflowMembers = async (req: Request, res: Response): Promi
       if (new Set(sourceIds).size !== sourceIds.length)
         throw new WorkflowProblem(400, 'Roster member IDs cannot be duplicated');
       const oldById = new Map(workflow.members.map((member: any) => [String(member._id), member]));
+      const oldStudentIds = workflow.members.flatMap((member: any) =>
+        member.student ? [String(member.student)] : [],
+      );
       workflow.memberRosterHistory.push({
         version: workflow.version,
         changedBy: req.user!._id,
@@ -1912,6 +2211,7 @@ export const replaceWorkflowMembers = async (req: Request, res: Response): Promi
           throw new WorkflowProblem(400, 'A roster member ID is invalid');
         return {
           ...(previous?._id ? { _id: previous._id } : {}),
+          ...(previous?.student ? { student: previous.student } : {}),
           ...(previous?.requestId
             ? { requestId: previous.requestId, requestFingerprint: previous.requestFingerprint }
             : {}),
@@ -1926,6 +2226,7 @@ export const replaceWorkflowMembers = async (req: Request, res: Response): Promi
           })),
         } as any;
       }) as any;
+      await syncPackageMembers(booking, workflow, session, oldStudentIds);
       workflow.version += 1;
       if (scopedKey)
         workflow.idempotency.push({
@@ -1971,7 +2272,7 @@ const findPublicWorkflow = async (token: string, session?: ClientSession) => {
 
 export const getPublicMemberIntake = async (req: Request, res: Response): Promise<void> => {
   const found = await findPublicWorkflow(req.params.token);
-  if (!found?.booking || !found.quote?.acceptedAt || found.resources?.schedule) {
+  if (!found?.booking || !canCollectMembers(found)) {
     sendResponse(res, 404, false, 'This member intake link is not available');
     return;
   }
@@ -2034,7 +2335,7 @@ export const submitPublicMember = async (req: Request, res: Response): Promise<v
   try {
     await withResourceTransaction(async (session) => {
       const found = await findPublicWorkflow(req.params.token, session);
-      if (!found?.booking || !found.quote?.acceptedAt || found.resources?.schedule)
+      if (!found?.booking || !canCollectMembers(found))
         throw new WorkflowProblem(404, 'This member intake link is not available');
       const existing = found.members.find((member: any) => member.requestId === requestId);
       if (existing) {
@@ -2086,6 +2387,7 @@ export const submitPublicMember = async (req: Request, res: Response): Promise<v
           size: item.size,
         })),
       });
+      await syncPackageMembers(found.booking, found, session);
       found.version += 1;
       found.events.push({
         action: 'member.submit',

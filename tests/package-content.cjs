@@ -19,6 +19,9 @@ test('content validation preserves ordering and rejects malformed references and
     {
       version: 0,
       details: {
+        deliverables: '  20 ảnh chỉnh sửa/người\nNhận qua Google Drive  ',
+        shootScope: '4 giờ, 2 concept, 1 địa điểm',
+        pricingConditions: 'Từ 30 người tại Hà Nội',
         benefits: ['  Có album  '],
         itinerary: [{ time: '08:00', title: 'Tập trung' }],
         extraCosts: [{ name: 'Di chuyển', priceLabel: 'Tùy địa điểm' }],
@@ -28,6 +31,14 @@ test('content validation preserves ordering and rejects malformed references and
   );
   assert.deepEqual(parsed.details.benefits, ['Có album']);
   assert.equal(parsed.details.itinerary[0].description, '');
+  assert.equal(parsed.details.deliverables, '20 ảnh chỉnh sửa/người\nNhận qua Google Drive');
+  for (const key of ['deliverables', 'shootScope', 'pricingConditions']) {
+    assert.equal(readPackageContent({ version: 0, details: {} }, 0).details[key], '');
+    assert.equal(new Package({ details: parsed.details }).details[key], parsed.details[key]);
+    for (const value of [null, 30, [], {}, 'x'.repeat(4001)]) {
+      assert.throws(() => readPackageContent({ version: 0, details: { [key]: value } }, 0));
+    }
+  }
   for (const raw of [
     null,
     {},
@@ -147,6 +158,25 @@ test('public details, editor authorization and image updates remain consistent o
     assert.equal((await put({ audience: 'Lớp cuối cấp' }, [], 0, 1)).status, 200);
     assert.equal(pkg.details.audience, 'Lớp cuối cấp');
   });
+  await t.test(
+    'saves and publicly returns the three optional package information fields',
+    async () => {
+      const details = {
+        deliverables: '20 ảnh chỉnh sửa/người\nAlbum lớp qua Google Drive',
+        shootScope: '4 giờ, 2 concept tại sân trường',
+        pricingConditions: 'Áp dụng từ 30 thành viên',
+      };
+      const saved = await put(details);
+      assert.equal(saved.status, 200);
+      const savedPackage = (await saved.json()).data;
+      const publicPackage = (await (await fetch(`${base}/api/public/packages/${id}`)).json()).data;
+      for (const [key, value] of Object.entries(details)) {
+        assert.equal(savedPackage.details[key], value);
+        assert.equal(publicPackage.details[key], value);
+      }
+      assert.equal(publicPackage.pricePerMember, 500000);
+    },
+  );
   const png = await sharp({
     create: { width: 200, height: 100, channels: 3, background: '#123456' },
   })

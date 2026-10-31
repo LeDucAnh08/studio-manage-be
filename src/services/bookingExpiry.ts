@@ -7,6 +7,57 @@ import { vietnamDay } from '../utils/rentalPeriod';
 
 export const BOOKING_EXPIRY_REASON =
   'Tự động hủy vì đã quá ngày chụp dự kiến mà yêu cầu chưa được duyệt.';
+export const PACKAGE_DEPOSIT_EXPIRY_REASON =
+  'Tự động hủy vì hết hạn giữ lịch mà chưa ghi nhận đủ tiền cọc. Số tiền đã ghi nhận sẽ được đối soát hoàn lại.';
+
+export const expirePackageReservations = async (now = new Date()): Promise<number> => {
+  if (mongoose.connection.readyState !== 1) return 0;
+  const filter = {
+    'packageReservation.status': 'held',
+    'packageReservation.expiresAt': { $lte: now },
+  };
+  const candidates = await BookingWorkflow.find(filter).select('_id booking').lean();
+  let count = 0;
+  for (const candidate of candidates) {
+    const expired = await withResourceTransaction(async (session) => {
+      const workflow = await BookingWorkflow.findOne({ ...filter, _id: candidate._id }).session(
+        session,
+      );
+      if (!workflow || workflow.resources.schedule) return false;
+      const net = workflow.payments.reduce(
+        (sum: number, payment: any) =>
+          sum + (payment.kind === 'refund' ? -payment.amount : payment.amount),
+        0,
+      );
+      if (net >= (workflow.quote?.depositRequired ?? Infinity)) return false;
+      const booking = await Booking.findById(workflow.booking).session(session);
+      if (!booking?.packageAgreement || booking.status !== 'approved') return false;
+      booking.status = 'cancelled';
+      booking.cancelledAt = now;
+      booking.cancellationReason = PACKAGE_DEPOSIT_EXPIRY_REASON;
+      booking.events.push(
+        { audience: 'client', message: PACKAGE_DEPOSIT_EXPIRY_REASON, at: now },
+        { audience: 'admin', message: PACKAGE_DEPOSIT_EXPIRY_REASON, at: now },
+      );
+      workflow.packageReservation!.status = 'expired';
+      workflow.lifecycle = 'cancelled';
+      workflow.version += 1;
+      workflow.memberEntry.opened = false;
+      workflow.memberEntry.closedAt = now;
+      workflow.events.push({
+        action: 'package.expire',
+        audience: 'client',
+        message: PACKAGE_DEPOSIT_EXPIRY_REASON,
+        at: now,
+      });
+      await booking.save({ session });
+      await workflow.save({ session });
+      return true;
+    });
+    if (expired) count += 1;
+  }
+  return count;
+};
 
 export const bookingExpiryCutoff = (now = new Date()) => vietnamDay(now);
 
@@ -14,7 +65,7 @@ export const expirePendingBookings = async (now = new Date()): Promise<number> =
   if (mongoose.connection.readyState !== 1) return 0;
   const filter = { status: 'pending', startAt: { $lt: bookingExpiryCutoff(now) } };
   const expired = await Booking.find(filter).select('_id').lean();
-  let count = 0;
+  let count = await expirePackageReservations(now);
   for (const candidate of expired) {
     const cancelled = await withResourceTransaction(async (session) => {
       const booking = await Booking.findOne({ ...filter, _id: candidate._id }).session(session);

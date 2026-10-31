@@ -39,6 +39,9 @@ export function readPackageContent(raw: unknown, filesCount: number) {
   const uploads = new Set<number>();
   const details: PackageDetailsInput = {
     audience: text(input.audience),
+    deliverables: text(input.deliverables),
+    shootScope: text(input.shootScope),
+    pricingConditions: text(input.pricingConditions),
     benefits: rows(input.benefits, (item) => required(item, 'quyền lợi', 500)),
     exclusions: rows(input.exclusions, (item) => required(item, 'khoản không bao gồm', 500)),
     itinerary: rows(input.itinerary, (item) => {

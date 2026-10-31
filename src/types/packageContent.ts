@@ -8,6 +8,9 @@ export interface PackageImage {
 
 export interface PackageDetails {
   audience: string;
+  deliverables: string;
+  shootScope: string;
+  pricingConditions: string;
   benefits: string[];
   exclusions: string[];
   itinerary: Array<{ time: string; title: string; description: string }>;

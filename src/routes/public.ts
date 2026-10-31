@@ -36,7 +36,7 @@ router.get('/packages/:id', validatePackageId, asyncHandler(getPublicPackage));
 router.get('/packages', async (_req: Request, res: Response): Promise<void> => {
   const packages = await Package.find({})
     .select(
-      'name pricePerMember duration crewRatio editingScope deliveryDays studentsPerCrew description costumes isPopular',
+      'name pricePerMember depositPercent depositHoldHours detailsVersion updatedAt duration crewRatio editingScope deliveryDays studentsPerCrew description costumes isPopular',
     )
     .populate('costumes', 'name')
     .sort({ pricePerMember: 1 });

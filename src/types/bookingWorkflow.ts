@@ -19,6 +19,7 @@ export type BookingWorkflowAction =
   | 'quote.accept'
   | 'payment.record'
   | 'resources.confirm'
+  | 'resources.costumes'
   | 'progress.update'
   | 'revision.request'
   | 'delivery.accept'
@@ -46,6 +47,14 @@ export interface BookingWorkflowDto {
     cancellationReason?: string;
     packageName: string;
     pricePerMember: number;
+    packageAgreement?: {
+      total: number;
+      depositRequired: number;
+      depositPercent: number;
+      holdHours: number;
+      acceptedAt: string;
+      terms: string[];
+    };
     members: number;
     className?: string;
     school?: string;
@@ -75,6 +84,11 @@ export interface BookingWorkflowDto {
     bookingId: string;
     version: number;
     lifecycle: BookingWorkflowLifecycle;
+    packageReservation?: {
+      status: 'held' | 'confirmed' | 'expired' | 'released';
+      expiresAt: string;
+      photographers: string[];
+    } | null;
     assignedPhotographer?: { _id: string; name: string } | null;
     assignedSupportPhotographers?: { _id: string; name: string }[];
     proposedSchedule?: {

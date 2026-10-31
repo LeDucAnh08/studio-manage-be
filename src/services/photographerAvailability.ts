@@ -2,6 +2,7 @@ import { ClientSession, Types, isValidObjectId } from 'mongoose';
 import Schedule from '../models/Schedule';
 import User from '../models/User';
 import PhotographerUnavailability from '../models/PhotographerUnavailability';
+import BookingWorkflow from '../models/BookingWorkflow';
 import { WorkflowProblem } from './workflowTransactions';
 
 export const PHOTOGRAPHER_BUFFER_MS = 60 * 60 * 1000;
@@ -66,10 +67,11 @@ export const photographerAvailability = async (
   options: {
     photographerIds?: string[];
     excludeSchedule?: Types.ObjectId;
+    excludeBooking?: Types.ObjectId;
     session?: ClientSession;
   } = {},
 ): Promise<PhotographerAvailability[]> => {
-  const { session, photographerIds, excludeSchedule } = options;
+  const { session, photographerIds, excludeSchedule, excludeBooking } = options;
   const users = await User.find({
     isActive: true,
     roles: 3,
@@ -97,6 +99,15 @@ export const photographerAvailability = async (
     endAt: { $gt: new Date(interval.start) },
   })
     .select('photographer startAt endAt')
+    .session(session ?? null)
+    .lean();
+  const holds = await BookingWorkflow.find({
+    'packageReservation.status': 'held',
+    'packageReservation.expiresAt': { $gt: new Date() },
+    'packageReservation.photographers': { $in: ids },
+    ...(excludeBooking ? { booking: { $ne: excludeBooking } } : {}),
+  })
+    .select('quote.proposedSchedule packageReservation.photographers')
     .session(session ?? null)
     .lean();
   return users
@@ -148,6 +159,16 @@ export const photographerAvailability = async (
         });
       if (blocks.some((row) => String(row.photographer) === String(user._id)))
         conflicts.push('Có lịch bận riêng trong khoảng thời gian này.');
+      for (const hold of holds) {
+        const held = hold.packageReservation?.photographers.some(
+          (id: Types.ObjectId) => String(id) === String(user._id),
+        );
+        const range = hold.quote?.proposedSchedule
+          ? scheduleInterval(hold.quote.proposedSchedule as any)
+          : null;
+        if (held && range && intervalsConflict(interval, range, PHOTOGRAPHER_BUFFER_MS))
+          conflicts.push('Đang giữ lịch tạm cho một đơn chờ đặt cọc.');
+      }
       return {
         _id: String(user._id),
         name: user.name || user.username,
@@ -176,6 +197,7 @@ export const ensurePhotographersAvailable = async (
   interval: { start: number; end: number },
   session: ClientSession,
   excludeSchedule?: Types.ObjectId,
+  excludeBooking?: Types.ObjectId,
 ) => {
   if (
     !photographerIds.length ||
@@ -187,6 +209,7 @@ export const ensurePhotographersAvailable = async (
     photographerIds,
     session,
     excludeSchedule,
+    excludeBooking,
   });
   if (rows.length !== photographerIds.length)
     throw new WorkflowProblem(400, 'Mỗi thợ được phân công phải là nhân viên đang hoạt động.');

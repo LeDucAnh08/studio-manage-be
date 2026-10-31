@@ -21,12 +21,14 @@ import {
 } from '../services/bookingCostumes';
 import { bookingCostumeDto } from '../services/bookingCostumeHolds';
 import { WorkflowProblem } from '../services/workflowTransactions';
+import { readPackageAgreement } from '../services/packageBooking';
 import type { Request, Response } from 'express';
 import {
   getWorkflow,
   executeWorkflowAction,
   listWorkflows,
   replaceWorkflowMembers,
+  approvePackageBooking,
 } from '../controllers/workflowController';
 
 const router = Router();
@@ -203,6 +205,11 @@ router.post(
       return;
     }
     const costumeSelections = parseCostumeSelections(req.body.costumeSelections);
+    if (req.body.packageAgreement !== undefined && costumeSelections.length)
+      throw new WorkflowProblem(
+        400,
+        'Đơn theo gói đã bao gồm trang phục; studio chuẩn bị sau khi chốt lịch.',
+      );
     const requestFingerprint = fingerprint([
       packageId,
       members,
@@ -213,6 +220,7 @@ router.post(
       location,
       note,
       ...(costumeSelections.length ? [costumeSelections] : []),
+      ...(req.body.packageAgreement !== undefined ? [req.body.packageAgreement] : []),
     ]);
 
     if (idempotencyKey) {
@@ -239,6 +247,13 @@ router.post(
     }
 
     const payload = {
+      packageAgreement: readPackageAgreement(
+        req.body.packageAgreement,
+        selected,
+        members,
+        start,
+        end,
+      ),
       client: req.user!._id,
       clientRequestId: idempotencyKey,
       requestFingerprint,
@@ -359,7 +374,16 @@ router.patch(
       );
       return;
     }
-    const existing = await Booking.findOne({ _id: req.params.id }).select('costumeHold').lean();
+    const existing = await Booking.findOne({ _id: req.params.id })
+      .select('costumeHold packageAgreement')
+      .lean();
+    if (existing?.packageAgreement && status === 'approved') {
+      await approvePackageBooking(req.params.id, req.user!, reviewNote);
+      sendResponse(res, 200, true, 'Đã duyệt gói và giữ lịch tạm, chờ đặt cọc.', {
+        _id: req.params.id,
+      });
+      return;
+    }
     if (existing?.costumeHold) {
       const data = await reviewBookingWithCostumes(
         req.params.id,

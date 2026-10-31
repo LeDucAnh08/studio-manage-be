@@ -195,6 +195,21 @@ const workflowSchema = new Schema(
       default: undefined,
     },
     quote: { type: quoteSchema },
+    packageReservation: {
+      type: new Schema(
+        {
+          status: {
+            type: String,
+            enum: ['held', 'confirmed', 'expired', 'released'],
+            required: true,
+          },
+          expiresAt: { type: Date, required: true },
+          photographers: [{ type: Schema.Types.ObjectId, ref: 'User' }],
+        },
+        { _id: false },
+      ),
+      default: undefined,
+    },
     quoteHistory: { type: [quoteSchema], default: [] },
     payments: { type: [paymentSchema], default: [] },
     resources: {
@@ -262,6 +277,8 @@ const workflowSchema = new Schema(
 workflowSchema.index({ 'resources.photographers': 1, lifecycle: 1 });
 workflowSchema.index({ assignedPhotographer: 1, lifecycle: 1 });
 workflowSchema.index({ assignedSupportPhotographers: 1, lifecycle: 1 });
+workflowSchema.index({ 'packageReservation.status': 1, 'packageReservation.expiresAt': 1 });
+workflowSchema.index({ 'packageReservation.photographers': 1, 'packageReservation.status': 1 });
 workflowSchema.index({ 'members.requestId': 1 }, { sparse: true });
 
 export interface IBookingWorkflow extends mongoose.Document {
@@ -272,6 +289,11 @@ export interface IBookingWorkflow extends mongoose.Document {
   assignedPhotographer?: Types.ObjectId;
   assignedSupportPhotographers?: Types.ObjectId[];
   quote?: Record<string, any>;
+  packageReservation?: {
+    status: 'held' | 'confirmed' | 'expired' | 'released';
+    expiresAt: Date;
+    photographers: Types.ObjectId[];
+  };
   quoteHistory: Array<Record<string, any>>;
   payments: Array<Record<string, any>>;
   resources: {

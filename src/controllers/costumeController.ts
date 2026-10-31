@@ -242,7 +242,7 @@ export const getPublicCatalog = async (req: Request, res: Response): Promise<voi
   if (Object.keys(price).length) filter.rentalDailyPrice = { ...price, $gt: 0 };
 
   const costumes = await Costume.find(filter)
-    .select('name description gender itemKind rentalPrice rentalDailyPrice type inventory')
+    .select('name description imageUrl gender itemKind rentalPrice rentalDailyPrice type inventory')
     .populate('type', 'name')
     .sort({ name: 1 })
     .lean();
@@ -261,6 +261,7 @@ export const getPublicCatalog = async (req: Request, res: Response): Promise<voi
         _id: String(costume._id),
         name: costume.name,
         description: costume.description,
+        ...(costume.imageUrl ? { imageUrl: costume.imageUrl } : {}),
         gender: costume.gender,
         itemKind: costume.itemKind ?? 'clothing',
         categoryId: type?._id ? String(type._id) : null,

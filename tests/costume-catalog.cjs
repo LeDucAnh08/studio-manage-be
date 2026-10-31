@@ -164,6 +164,7 @@ test('public catalog filters daily prices and exposes only safe availability fie
         {
           _id: '000000000000000000000001',
           name: 'Nón tốt nghiệp',
+          imageUrl: '/costume-demo/graduationCap.webp',
           description: 'Màu xanh',
           gender: 'unisex',
           itemKind: 'accessory',
@@ -208,6 +209,7 @@ test('public catalog filters daily prices and exposes only safe availability fie
     {
       _id: '000000000000000000000001',
       name: 'Nón tốt nghiệp',
+      imageUrl: '/costume-demo/graduationCap.webp',
       description: 'Màu xanh',
       gender: 'unisex',
       itemKind: 'accessory',

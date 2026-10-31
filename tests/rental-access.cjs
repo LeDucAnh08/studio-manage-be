@@ -42,8 +42,8 @@ test('rentals are open by default and ignore the removed switch while enforcing 
     server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));
   });
-  const call = (id, method = 'GET') =>
-    fetch(`http://127.0.0.1:${server.address().port}/rentals`, {
+  const call = (id, method = 'GET', query = '') =>
+    fetch(`http://127.0.0.1:${server.address().port}/rentals${query}`, {
       method,
       headers: {
         ...(id ? { Authorization: `Bearer ${jwt.sign({ id }, process.env.JWT_SECRET)}` } : {}),
@@ -66,6 +66,28 @@ test('rentals are open by default and ignore the removed switch while enforcing 
     );
   }
   assert.equal((await call()).status, 401);
+  for (const view of ['active', 'completed', 'cancelled', 'rejected']) {
+    assert.equal((await call(clientId, 'GET', `?page=2&view=${view}`)).status, 200);
+    assert.equal(lastFilter.client, clientId, 'Status filtering must preserve customer ownership');
+    assert.deepEqual(
+      lastFilter.status,
+      view === 'active'
+        ? {
+            $in: [
+              'requested',
+              'quoting',
+              'awaiting_deposit',
+              'ready_to_confirm',
+              'confirmed',
+              'checked_out',
+              'returned',
+            ],
+          }
+        : view,
+    );
+  }
+  for (const query of ['?view=unknown', '?view[$ne]=completed', '?view=active&view=completed'])
+    assert.equal((await call(clientId, 'GET', query)).status, 400);
   assert.equal((await call(photographerId)).status, 403);
   assert.equal(
     (await call(adminId, 'POST')).status,
