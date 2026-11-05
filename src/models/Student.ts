@@ -6,6 +6,8 @@ export interface IStudent extends Document {
   gender: 'male' | 'female';
   height: number;
   weight: number;
+  pantsSize?: string;
+  shirtSize?: string;
   notes?: string;
   costumes: mongoose.Types.ObjectId[];
   costumeSizes?: Array<{ costume: mongoose.Types.ObjectId; size: string }>;
@@ -18,6 +20,8 @@ const studentSchema = new Schema<IStudent>(
     gender: { type: String, enum: ['male', 'female', 'other'] },
     height: { type: Number, min: 1 },
     weight: { type: Number, min: 1 },
+    pantsSize: { type: String, trim: true, maxlength: 20 },
+    shirtSize: { type: String, trim: true, maxlength: 20 },
     notes: { type: String },
     costumes: [{ type: Schema.Types.ObjectId, ref: 'Costume', default: [] }],
     costumeSizes: [

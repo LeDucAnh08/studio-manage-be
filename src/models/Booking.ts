@@ -49,6 +49,20 @@ const bookingSchema = new Schema(
       default: undefined,
     },
     members: { type: Number, required: true },
+    students: {
+      type: [
+        new Schema({
+          name: { type: String, required: true, trim: true },
+          contact: { type: String, trim: true },
+          height: { type: Number, min: 1, max: 250 },
+          weight: { type: Number, min: 1, max: 500 },
+          pantsSize: { type: String, trim: true, maxlength: 20 },
+          shirtSize: { type: String, trim: true, maxlength: 20 },
+          notes: { type: String, trim: true, maxlength: 500 },
+        }),
+      ],
+      default: [],
+    },
     className: { type: String, trim: true },
     school: { type: String, trim: true },
     contactName: { type: String, required: true },

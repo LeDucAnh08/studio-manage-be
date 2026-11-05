@@ -117,4 +117,93 @@ test('customer order views filter all pages, retain legacy intake and isolate ea
   assert.equal((await call('?status[]=pending')).status, 400);
   assert.equal((await call('?view=unknown')).status, 400);
   assert.equal((await call('?view[]=active')).status, 400);
+
+  await t.test('stage filters exactly match displayed stages before pagination', async () => {
+    const examples = [
+      ['pending', 'intake', 'pending'],
+      ['approved', undefined, 'awaiting_confirmation'],
+      ['approved', 'quoting', 'awaiting_confirmation'],
+      ['approved', 'awaiting_deposit', 'awaiting_confirmation'],
+      ['approved', 'ready_to_confirm', 'awaiting_confirmation'],
+      ['approved', 'confirmed', 'confirmed'],
+      ['approved', 'shooting', 'active'],
+      ['approved', 'editing', 'active'],
+      ['approved', 'revision_requested', 'active'],
+      ['approved', 'delivered', 'delivered'],
+      ['approved', 'accepted', 'delivered'],
+      ['approved', 'completed', 'completed'],
+      ['approved', 'cancelled', 'cancelled'],
+      ['cancelled', 'intake', 'cancelled'],
+      ['rejected', 'intake', 'rejected'],
+      ['approved', 'change_pending', 'active', 'editing'],
+      ['approved', 'change_pending', 'delivered', 'accepted'],
+      ['approved', 'change_pending', 'confirmed', 'confirmed'],
+      ['approved', 'change_pending', 'awaiting_confirmation'],
+      ['approved', 'change_pending', 'confirmed', undefined, true],
+    ];
+    const expected = new Map(
+      all.data
+        .concat((await (await call('?page=2')).json()).data)
+        .map((row) => [row.bookingId, row.orderStage]),
+    );
+    for (const [status, lifecycle, stage, previousLifecycle, hasSchedule] of examples) {
+      const booking = await Booking.create({
+        ...records[0].toObject(),
+        _id: new mongoose.Types.ObjectId(),
+        status,
+      });
+      if (lifecycle)
+        await BookingWorkflow.create({
+          booking: booking._id,
+          lifecycle,
+          ...(hasSchedule
+            ? {
+                resources: {
+                  schedule: new mongoose.Types.ObjectId(),
+                  photographers: [],
+                  costumes: [],
+                },
+              }
+            : {}),
+          ...(previousLifecycle
+            ? { changeRequest: { kind: 'change', status: 'requested', previousLifecycle } }
+            : {}),
+        });
+      expected.set(String(booking._id), stage);
+    }
+    for (const stage of [
+      'pending',
+      'awaiting_confirmation',
+      'confirmed',
+      'active',
+      'delivered',
+      'completed',
+      'cancelled',
+      'rejected',
+    ]) {
+      const ids = [];
+      let page = 1;
+      let total;
+      do {
+        const response = await call(`?stage=${stage}&limit=2&page=${page++}`);
+        assert.equal(response.status, 200);
+        const result = await response.json();
+        total = result.pagination.total;
+        assert.ok(result.data.every((row) => row.orderStage === stage));
+        ids.push(...result.data.map((row) => row.bookingId));
+      } while (ids.length < total);
+      assert.deepEqual(
+        ids.sort(),
+        [...expected]
+          .filter(([, value]) => value === stage)
+          .map(([id]) => id)
+          .sort(),
+        stage,
+      );
+    }
+    assert.equal((await call('?stage=unknown')).status, 400);
+    assert.equal((await call('?stage[]=pending')).status, 400);
+    assert.equal((await (await call('?stage=confirmed', other)).json()).pagination.total, 0);
+    assert.equal((await (await call('?stage=completed', other)).json()).pagination.total, 1);
+  });
 });

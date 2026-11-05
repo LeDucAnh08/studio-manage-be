@@ -205,6 +205,50 @@ router.post(
       return;
     }
     const costumeSelections = parseCostumeSelections(req.body.costumeSelections);
+    const studentInput = req.body.students ?? [];
+    if (!Array.isArray(studentInput) || studentInput.length > members) {
+      throw new WorkflowProblem(
+        400,
+        'Danh sách học sinh không được vượt quá số thành viên dự kiến.',
+      );
+    }
+    const students = studentInput.map((student: unknown, index: number) => {
+      if (!student || typeof student !== 'object' || Array.isArray(student))
+        throw new WorkflowProblem(400, `Thông tin học sinh ${index + 1} không hợp lệ.`);
+      const item = student as Record<string, unknown>;
+      const name = trimmedText(item.name, 100);
+      const contact =
+        typeof (item.phone ?? '') === 'string' ? trimmedText(item.phone ?? '', 25, false) : null;
+      const pantsSize =
+        typeof (item.pantsSize ?? '') === 'string'
+          ? trimmedText(item.pantsSize ?? '', 20, false)
+          : null;
+      const shirtSize =
+        typeof (item.shirtSize ?? '') === 'string'
+          ? trimmedText(item.shirtSize ?? '', 20, false)
+          : null;
+      const height = item.height == null || item.height === '' ? undefined : item.height;
+      const notes =
+        typeof (item.notes ?? '') === 'string' ? trimmedText(item.notes ?? '', 500, false) : null;
+      const weight = item.weight == null || item.weight === '' ? undefined : item.weight;
+      if (
+        !name ||
+        contact === null ||
+        pantsSize === null ||
+        shirtSize === null ||
+        notes === null ||
+        (contact && !/^(?:0|\+84)[1-9]\d{8}$/.test(contact.replace(/[ ().-]/g, ''))) ||
+        (height !== undefined &&
+          (typeof height !== 'number' || !Number.isFinite(height) || height < 1 || height > 250)) ||
+        (weight !== undefined &&
+          (typeof weight !== 'number' || !Number.isFinite(weight) || weight < 1 || weight > 500))
+      )
+        throw new WorkflowProblem(
+          400,
+          `Kiểm tra họ tên, số điện thoại, chiều cao, cân nặng và size của học sinh ${index + 1}.`,
+        );
+      return { name, contact, height, weight, pantsSize, shirtSize, ...(notes ? { notes } : {}) };
+    });
     if (req.body.packageAgreement !== undefined && costumeSelections.length)
       throw new WorkflowProblem(
         400,
@@ -221,6 +265,7 @@ router.post(
       note,
       ...(costumeSelections.length ? [costumeSelections] : []),
       ...(req.body.packageAgreement !== undefined ? [req.body.packageAgreement] : []),
+      ...(students.length ? [students] : []),
     ]);
 
     if (idempotencyKey) {
@@ -274,6 +319,7 @@ router.post(
         description: selected.description,
       },
       members,
+      students,
       contactName,
       phone,
       location,

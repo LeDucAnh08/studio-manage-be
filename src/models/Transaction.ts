@@ -12,6 +12,8 @@ export interface ITransaction extends Document {
   season?: Types.ObjectId | null;
   workflowBooking?: Types.ObjectId;
   workflowPayment?: Types.ObjectId;
+  paymentSource?: 'manual' | 'sepay';
+  providerReceipt?: Types.ObjectId;
   rentalOrder?: Types.ObjectId;
   rentalPayment?: Types.ObjectId;
 }
@@ -29,6 +31,8 @@ const transactionSchema = new Schema<ITransaction>(
     season: { type: Schema.Types.ObjectId, ref: 'Season', default: null },
     workflowBooking: { type: Schema.Types.ObjectId, ref: 'Booking', index: true },
     workflowPayment: { type: Schema.Types.ObjectId, ref: 'BookingWorkflow' },
+    paymentSource: { type: String, enum: ['manual', 'sepay'] },
+    providerReceipt: { type: Schema.Types.ObjectId, ref: 'SePayReceipt' },
     rentalOrder: { type: Schema.Types.ObjectId, ref: 'RentalOrder', index: true },
     rentalPayment: { type: Schema.Types.ObjectId },
   },

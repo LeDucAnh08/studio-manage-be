@@ -25,6 +25,12 @@ import {
 } from '../services/photographerAvailability';
 import { workflowPhotographers } from '../services/workflowPhotographer';
 import { expirePendingBookings } from '../services/bookingExpiry';
+import { createDepositPayment, depositPaymentDto } from '../services/depositPayment';
+import {
+  bookingOrderStage,
+  bookingOrderStages,
+  bookingOrderStageExpression,
+} from '../services/bookingOrderStage';
 
 type Actor = NonNullable<Request['user']>;
 type ActionBody = Record<string, any> & { action?: string; expectedVersion?: number };
@@ -175,6 +181,7 @@ const toDto = async (booking: any, workflow: IBookingWorkflow | null, actor: Act
       amount: item.amount,
       method: item.method,
       reference: item.reference,
+      source: item.source ?? 'manual',
       receivedAt: item.receivedAt,
     })),
   };
@@ -198,7 +205,7 @@ const toDto = async (booking: any, workflow: IBookingWorkflow | null, actor: Act
     : null;
   const allowMemberRead = clientView || canManage || isAssigned;
   const members = allowMemberRead
-    ? (workflow?.members ?? []).map((item: any) => ({
+    ? (workflow?.members ?? booking.students ?? []).map((item: any) => ({
         _id: String(item._id),
         studentId: item.student ? String(item.student) : null,
         name: item.name,
@@ -206,6 +213,9 @@ const toDto = async (booking: any, workflow: IBookingWorkflow | null, actor: Act
         height: item.height,
         weight: item.weight,
         contact: item.contact,
+        pantsSize: item.pantsSize,
+        shirtSize: item.shirtSize,
+        notes: item.notes,
         costumeSizes: (item.costumeSizes ?? []).map((size: any) => ({
           costumeId: String(size.costumeId),
           size: size.size,
@@ -263,6 +273,7 @@ const toDto = async (booking: any, workflow: IBookingWorkflow | null, actor: Act
     },
     workflow: {
       bookingId: String(booking._id),
+      orderStage: bookingOrderStage(booking.status, workflow),
       packageReservation: workflow?.packageReservation ?? null,
       version: workflow?.version ?? 0,
       lifecycle: booking.status === 'cancelled' ? 'cancelled' : (workflow?.lifecycle ?? 'intake'),
@@ -285,6 +296,7 @@ const toDto = async (booking: any, workflow: IBookingWorkflow | null, actor: Act
           }))
         : [],
       payments: financialView ? payments : null,
+      depositPayment: financialView ? depositPaymentDto(booking, workflow) : null,
       resources,
       members: allowMemberRead ? members : [],
       allowedCostumes,
@@ -374,6 +386,9 @@ export const listWorkflows = async (req: Request, res: Response): Promise<void> 
     const actor = req.user!;
     const view = req.query.view;
     const status = req.query.status;
+    const stage = req.query.stage;
+    if (stage !== undefined && (typeof stage !== 'string' || !bookingOrderStages.includes(stage)))
+      throw new WorkflowProblem(400, 'Giai đoạn đơn không hợp lệ');
     if (
       status !== undefined &&
       (typeof status !== 'string' ||
@@ -429,14 +444,42 @@ export const listWorkflows = async (req: Request, res: Response): Promise<void> 
     }
     if (status) constraints.push({ status });
     if (constraints.length) bookingFilter.$and = constraints;
-    const [bookings, total] = await Promise.all([
-      Booking.find(bookingFilter)
-        .sort({ updatedAt: -1, _id: -1 })
-        .skip((page - 1) * limit)
-        .limit(limit)
-        .lean(),
-      Booking.countDocuments(bookingFilter),
-    ]);
+    const [bookings, total] = stage
+      ? await (async () => {
+          const [result] = await Booking.aggregate([
+            { $match: bookingFilter },
+            {
+              $lookup: {
+                from: BookingWorkflow.collection.name,
+                localField: '_id',
+                foreignField: 'booking',
+                as: '__workflows',
+              },
+            },
+            { $set: { __workflow: { $arrayElemAt: ['$__workflows', 0] } } },
+            { $match: { $expr: { $eq: [bookingOrderStageExpression, stage] } } },
+            {
+              $facet: {
+                data: [
+                  { $sort: { updatedAt: -1, _id: -1 } },
+                  { $skip: (page - 1) * limit },
+                  { $limit: limit },
+                  { $unset: ['__workflows', '__workflow'] },
+                ],
+                count: [{ $count: 'total' }],
+              },
+            },
+          ]);
+          return [result.data, result.count[0]?.total ?? 0] as [any[], number];
+        })()
+      : await Promise.all([
+          Booking.find(bookingFilter)
+            .sort({ updatedAt: -1, _id: -1 })
+            .skip((page - 1) * limit)
+            .limit(limit)
+            .lean(),
+          Booking.countDocuments(bookingFilter),
+        ]);
     const ids = bookings.map((booking: any) => booking._id);
     const workflows = await BookingWorkflow.find({ booking: { $in: ids } }).lean();
     const assignments = await workflowPhotographers(workflows);
@@ -450,6 +493,7 @@ export const listWorkflows = async (req: Request, res: Response): Promise<void> 
       const financialView = canSeeAll || owner(booking, actor);
       return {
         bookingId: String(booking._id),
+        orderStage: bookingOrderStage(booking.status, workflow),
         version: workflow?.version ?? 0,
         lifecycle: booking.status === 'cancelled' ? 'cancelled' : (workflow?.lifecycle ?? 'intake'),
         assignedPhotographer: assignments.get(String(booking._id))?.assignedPhotographer ?? null,
@@ -729,7 +773,7 @@ const ensureWorkflow = (booking: any, workflow: IBookingWorkflow | null): IBooki
     lifecycle: 'intake',
     version: 0,
     resources: { photographers: [], costumes: [] },
-    members: [],
+    members: booking.students ?? [],
     payments: [],
     progress: { status: 'not_started', deliveryVersion: 0, revisionRequests: [] },
     events: [],
@@ -747,12 +791,12 @@ const currentPayable = (workflow: IBookingWorkflow): number =>
 
 const logEvent = (
   workflow: IBookingWorkflow,
-  actor: Actor,
+  actor: Actor | undefined,
   action: string,
   message: string,
   audience = 'client',
 ) => {
-  workflow.events.push({ action, message, actor: actor._id, audience, at: new Date() });
+  workflow.events.push({ action, message, actor: actor?._id, audience, at: new Date() });
   if (workflow.events.length > 200) workflow.events.splice(0, workflow.events.length - 200);
 };
 
@@ -792,7 +836,11 @@ const createLinkedCustomer = async (
           gender: member.gender,
           height: member.height,
           weight: member.weight,
-          notes: member.contact ? `Contact: ${member.contact}` : undefined,
+          pantsSize: member.pantsSize,
+          shirtSize: member.shirtSize,
+          notes: [member.contact ? `Contact: ${member.contact}` : '', member.notes]
+            .filter(Boolean)
+            .join('\n'),
           costumes: member.costumeSizes.map((item: any) => item.costumeId),
           costumeSizes: member.costumeSizes.map((item: any) => ({
             costume: item.costumeId,
@@ -830,7 +878,9 @@ const syncPackageMembers = async (
       gender: member.gender,
       height: member.height,
       weight: member.weight,
-      notes: member.contact || '',
+      pantsSize: member.pantsSize,
+      shirtSize: member.shirtSize,
+      notes: [member.contact, member.notes].filter(Boolean).join('\n'),
       costumes: member.costumeSizes.map((item: any) => item.costumeId),
       costumeSizes: member.costumeSizes.map((item: any) => ({
         costume: item.costumeId,
@@ -971,7 +1021,7 @@ const amendAcceptedQuote = (workflow: IBookingWorkflow, request: any, actor: Act
 const confirmWorkflowResources = async (
   booking: any,
   workflow: IBookingWorkflow,
-  actor: Actor,
+  actor: Actor | undefined,
   session: ClientSession,
   requestedSchedule: any,
   costumes: Array<Record<string, any>>,
@@ -1022,7 +1072,7 @@ const confirmWorkflowResources = async (
         supportPhotographers: resourceValues.photographerIds
           .slice(1)
           .map((id: string) => new Types.ObjectId(String(id))),
-        bookedBy: actor._id,
+        bookedBy: actor?._id,
         status: 'confirmed',
         notes: booking.note,
         workflowBooking: booking._id,
@@ -1053,6 +1103,169 @@ const confirmWorkflowResources = async (
 
   if (workflow.packageReservation?.status === 'held')
     workflow.packageReservation.status = 'confirmed';
+};
+
+// Caller owns the resource transaction. Manual callers authenticate before entering;
+// SePay passes no actor and records its receipt explicitly, never a synthetic staff user.
+export const recordWorkflowPayment = async (
+  booking: any,
+  workflow: IBookingWorkflow,
+  actor: Actor | undefined,
+  body: ActionBody,
+  session: ClientSession,
+  context: { source: 'manual' | 'sepay'; providerReceipt?: Types.ObjectId } = { source: 'manual' },
+) => {
+  if (
+    body.kind === 'deposit' &&
+    body.method === 'bank_transfer' &&
+    workflow.depositPayment &&
+    context.source === 'manual'
+  )
+    throw new WorkflowProblem(
+      409,
+      'Tiền cọc chuyển khoản của đơn có QR được SePay tự đối soát để tránh ghi nhận hai lần.',
+    );
+  const cancellation =
+    workflow.packageReservation?.status === 'expired' ||
+    (workflow.lifecycle === 'cancelled' &&
+      workflow.changeRequest?.kind === 'cancel' &&
+      workflow.changeRequest.status === 'applied');
+  const finalizedChange = isAppliedFinancialChange(workflow);
+  if (
+    !workflow.quote?.acceptedAt ||
+    (!cancellation &&
+      ![
+        'awaiting_deposit',
+        'ready_to_confirm',
+        'confirmed',
+        'shooting',
+        'editing',
+        'delivered',
+        'revision_requested',
+        'accepted',
+      ].includes(workflow.lifecycle))
+  )
+    throw new WorkflowProblem(409, 'A client-accepted quote is required before recording money');
+  const kind = body.kind;
+  if (
+    kind !== 'refund' &&
+    workflow.packageReservation?.status === 'held' &&
+    workflow.packageReservation.expiresAt <= new Date()
+  )
+    throw new WorkflowProblem(409, 'Đã hết hạn giữ lịch. Hãy tải lại hồ sơ.');
+  const amount = Number(body.amount);
+  const method = body.method;
+  const receivedAt = body.receivedAt ? new Date(body.receivedAt) : new Date();
+  if (
+    !['deposit', 'balance', 'refund'].includes(kind) ||
+    !Number.isSafeInteger(amount) ||
+    amount < 1 ||
+    amount > 100_000_000_000 ||
+    !['cash', 'bank_transfer', 'other'].includes(method) ||
+    !Number.isFinite(receivedAt.getTime()) ||
+    receivedAt.getTime() > Date.now() + 300000
+  )
+    throw new WorkflowProblem(400, 'Payment fields are invalid');
+  const net = netReceived(workflow);
+  if (
+    kind === 'deposit' &&
+    (workflow.lifecycle !== 'awaiting_deposit' ||
+      net >= workflow.quote.depositRequired ||
+      amount > workflow.quote.depositRequired - net)
+  )
+    throw new WorkflowProblem(409, 'Deposit amount must cover only the outstanding deposit');
+  if (
+    kind === 'balance' &&
+    (cancellation
+      ? amount > Math.max(0, (workflow.changeRequest?.finalPayable ?? 0) - net)
+      : net < workflow.quote.depositRequired ||
+        !workflow.resources.schedule ||
+        amount > currentTotal(workflow) - net)
+  )
+    throw new WorkflowProblem(409, 'Balance payment cannot exceed the outstanding agreed amount');
+  if (
+    kind === 'refund' &&
+    (!finalizedChange || amount > Math.max(0, net - currentPayable(workflow)))
+  )
+    throw new WorkflowProblem(
+      409,
+      'Refunds are available only after a client-approved change or cancellation and cannot exceed the amount due back',
+    );
+  const type = kind === 'refund' ? 'expense' : 'income';
+  const categoryName =
+    kind === 'deposit' ? 'Đặt cọc' : kind === 'refund' ? 'Hoàn tiền' : 'Thanh toán còn lại';
+  let category = await Category.findOne({ name: categoryName, type }).session(session);
+  if (!category)
+    [category] = await Category.create(
+      [{ name: categoryName, type, isDefault: true, createdBy: actor?._id }],
+      { session },
+    );
+  const paymentId = new Types.ObjectId();
+  const description = `${kind === 'refund' ? 'Refund' : kind === 'deposit' ? 'Deposit' : 'Balance payment'} for booking ${booking._id}${body.reference ? ` (${String(body.reference).slice(0, 100)})` : ''}`;
+  const [transaction] = await Transaction.create(
+    [
+      {
+        customer: workflow.customer ?? null,
+        workflowBooking: booking._id,
+        workflowPayment: paymentId,
+        type,
+        amount,
+        categoryId: category._id,
+        description,
+        date: receivedAt,
+        createdBy: actor?._id,
+        paymentSource: context.source,
+        providerReceipt: context.providerReceipt,
+      },
+    ],
+    { session },
+  );
+  workflow.payments.push({
+    _id: paymentId,
+    kind,
+    amount,
+    method,
+    reference: cleanText(body.reference, 120, false),
+    receivedAt,
+    transaction: transaction._id,
+    recordedBy: actor?._id,
+    source: context.source,
+    providerReceipt: context.providerReceipt,
+  });
+  if (
+    !cancellation &&
+    netReceived(workflow) >= workflow.quote.depositRequired &&
+    !workflow.resources.schedule
+  )
+    workflow.lifecycle = 'ready_to_confirm';
+  if (
+    booking.packageAgreement &&
+    workflow.packageReservation?.status === 'held' &&
+    netReceived(workflow) >= workflow.quote.depositRequired
+  ) {
+    if (workflow.packageReservation.expiresAt <= new Date())
+      throw new WorkflowProblem(409, 'Đã hết hạn giữ lịch. Hãy tải lại hồ sơ.');
+    await confirmWorkflowResources(
+      booking,
+      workflow,
+      actor,
+      session,
+      {
+        ...workflow.quote.proposedSchedule.toObject(),
+        photographerIds: workflow.packageReservation.photographers.map(String),
+      },
+      [],
+    );
+  }
+  if (
+    !cancellation &&
+    workflow.resources.schedule &&
+    settled(workflow) &&
+    workflow.progress.acceptedAt
+  )
+    workflow.lifecycle = 'completed';
+  logEvent(workflow, actor, 'payment.record', `${kind} of ${amount} recorded.`, 'accounting');
+  return paymentId;
 };
 
 const runAction = async (
@@ -1210,6 +1423,7 @@ const runAction = async (
           photographers: team.map((id) => new Types.ObjectId(id)),
         };
         workflow.lifecycle = 'awaiting_deposit';
+        workflow.depositPayment = createDepositPayment(booking, workflow);
         booking.status = 'approved';
         booking.reviewedAt = new Date();
         booking.reviewedBy = actor._id;
@@ -1356,148 +1570,7 @@ const runAction = async (
       }
       case 'payment.record': {
         requireActor(isAdmin || isRole(actor, 5));
-        const cancellation =
-          workflow.packageReservation?.status === 'expired' ||
-          (workflow.lifecycle === 'cancelled' &&
-            workflow.changeRequest?.kind === 'cancel' &&
-            workflow.changeRequest.status === 'applied');
-        const finalizedChange = isAppliedFinancialChange(workflow);
-        if (
-          !workflow.quote?.acceptedAt ||
-          (!cancellation &&
-            ![
-              'awaiting_deposit',
-              'ready_to_confirm',
-              'confirmed',
-              'shooting',
-              'editing',
-              'delivered',
-              'revision_requested',
-              'accepted',
-            ].includes(workflow.lifecycle))
-        )
-          throw new WorkflowProblem(
-            409,
-            'A client-accepted quote is required before recording money',
-          );
-        const kind = body.kind;
-        if (
-          kind !== 'refund' &&
-          workflow.packageReservation?.status === 'held' &&
-          workflow.packageReservation.expiresAt <= new Date()
-        )
-          throw new WorkflowProblem(409, 'Đã hết hạn giữ lịch. Hãy tải lại hồ sơ.');
-        const amount = Number(body.amount);
-        const method = body.method;
-        const receivedAt = body.receivedAt ? new Date(body.receivedAt) : new Date();
-        if (
-          !['deposit', 'balance', 'refund'].includes(kind) ||
-          !Number.isSafeInteger(amount) ||
-          amount < 1 ||
-          amount > 100_000_000_000 ||
-          !['cash', 'bank_transfer', 'other'].includes(method) ||
-          !Number.isFinite(receivedAt.getTime()) ||
-          receivedAt.getTime() > Date.now() + 300000
-        )
-          throw new WorkflowProblem(400, 'Payment fields are invalid');
-        const net = netReceived(workflow);
-        if (
-          kind === 'deposit' &&
-          (workflow.lifecycle !== 'awaiting_deposit' ||
-            net >= workflow.quote.depositRequired ||
-            amount > workflow.quote.depositRequired - net)
-        )
-          throw new WorkflowProblem(409, 'Deposit amount must cover only the outstanding deposit');
-        if (
-          kind === 'balance' &&
-          (cancellation
-            ? amount > Math.max(0, (workflow.changeRequest?.finalPayable ?? 0) - net)
-            : net < workflow.quote.depositRequired ||
-              !workflow.resources.schedule ||
-              amount > currentTotal(workflow) - net)
-        )
-          throw new WorkflowProblem(
-            409,
-            'Balance payment cannot exceed the outstanding agreed amount',
-          );
-        if (
-          kind === 'refund' &&
-          (!finalizedChange || amount > Math.max(0, net - currentPayable(workflow)))
-        )
-          throw new WorkflowProblem(
-            409,
-            'Refunds are available only after a client-approved change or cancellation and cannot exceed the amount due back',
-          );
-        const type = kind === 'refund' ? 'expense' : 'income';
-        const categoryName =
-          kind === 'deposit' ? 'Đặt cọc' : kind === 'refund' ? 'Hoàn tiền' : 'Thanh toán còn lại';
-        let category = await Category.findOne({ name: categoryName, type }).session(session);
-        if (!category)
-          [category] = await Category.create(
-            [{ name: categoryName, type, isDefault: true, createdBy: actor._id }],
-            { session },
-          );
-        const paymentId = new Types.ObjectId();
-        const description = `${kind === 'refund' ? 'Refund' : kind === 'deposit' ? 'Deposit' : 'Balance payment'} for booking ${booking._id}${body.reference ? ` (${String(body.reference).slice(0, 100)})` : ''}`;
-        const [transaction] = await Transaction.create(
-          [
-            {
-              customer: workflow.customer ?? null,
-              workflowBooking: booking._id,
-              workflowPayment: paymentId,
-              type,
-              amount,
-              categoryId: category._id,
-              description,
-              date: receivedAt,
-              createdBy: actor._id,
-            },
-          ],
-          { session },
-        );
-        workflow.payments.push({
-          _id: paymentId,
-          kind,
-          amount,
-          method,
-          reference: cleanText(body.reference, 120, false),
-          receivedAt,
-          transaction: transaction._id,
-          recordedBy: actor._id,
-        });
-        if (
-          !cancellation &&
-          netReceived(workflow) >= workflow.quote.depositRequired &&
-          !workflow.resources.schedule
-        )
-          workflow.lifecycle = 'ready_to_confirm';
-        if (
-          booking.packageAgreement &&
-          workflow.packageReservation?.status === 'held' &&
-          netReceived(workflow) >= workflow.quote.depositRequired
-        ) {
-          if (workflow.packageReservation.expiresAt <= new Date())
-            throw new WorkflowProblem(409, 'Đã hết hạn giữ lịch. Hãy tải lại hồ sơ.');
-          await confirmWorkflowResources(
-            booking,
-            workflow,
-            actor,
-            session,
-            {
-              ...workflow.quote.proposedSchedule.toObject(),
-              photographerIds: workflow.packageReservation.photographers.map(String),
-            },
-            [],
-          );
-        }
-        if (
-          !cancellation &&
-          workflow.resources.schedule &&
-          settled(workflow) &&
-          workflow.progress.acceptedAt
-        )
-          workflow.lifecycle = 'completed';
-        logEvent(workflow, actor, action, `${kind} of ${amount} recorded.`, 'accounting');
+        await recordWorkflowPayment(booking, workflow, actor, body, session);
         break;
       }
       case 'resources.confirm': {
@@ -2126,6 +2199,9 @@ export const replaceWorkflowMembers = async (req: Request, res: Response): Promi
         const name = cleanText(item?.name, 100);
         const contact = cleanText(item?.contact ?? '', 80, false);
         const gender = item?.gender;
+        const pantsSize = cleanText(item?.pantsSize ?? '', 20, false);
+        const shirtSize = cleanText(item?.shirtSize ?? '', 20, false);
+        const notes = cleanText(item?.notes ?? '', 500, false);
         const height =
           item?.height === undefined || item.height === null || item.height === ''
             ? undefined
@@ -2138,6 +2214,9 @@ export const replaceWorkflowMembers = async (req: Request, res: Response): Promi
         if (
           !name ||
           contact === null ||
+          pantsSize === null ||
+          shirtSize === null ||
+          notes === null ||
           !['male', 'female', 'other', undefined].includes(gender) ||
           (height !== undefined && (!Number.isFinite(height) || height < 1 || height > 250)) ||
           (weight !== undefined && (!Number.isFinite(weight) || weight < 1 || weight > 500)) ||
@@ -2160,7 +2239,18 @@ export const replaceWorkflowMembers = async (req: Request, res: Response): Promi
           seen.add(costumeId);
           return { costumeId, size: size.size.trim() };
         });
-        return { sourceId: item?._id, name, contact, gender, height, weight, costumeSizes };
+        return {
+          sourceId: item?._id,
+          name,
+          contact,
+          gender,
+          height,
+          weight,
+          pantsSize,
+          shirtSize,
+          notes,
+          costumeSizes,
+        };
       });
       const costumeIds = [
         ...new Set(
@@ -2220,6 +2310,9 @@ export const replaceWorkflowMembers = async (req: Request, res: Response): Promi
           gender: member.gender,
           height: member.height,
           weight: member.weight,
+          pantsSize: member.pantsSize,
+          shirtSize: member.shirtSize,
+          notes: member.notes,
           costumeSizes: member.costumeSizes.map((item: any) => ({
             costumeId: new Types.ObjectId(item.costumeId),
             size: item.size,

@@ -266,6 +266,68 @@ test('Client registration and booking permissions over HTTP', async (t) => {
       409,
     );
   });
+  await t.test(
+    'student roster saves notes and rejects invalid rows and altered retries',
+    async () => {
+      const student = {
+        name: ' Nguyễn An ',
+        phone: '0901234567',
+        height: 165.5,
+        weight: 52.5,
+        pantsSize: '28',
+        shirtSize: 'M',
+        notes: ' Cần thử size. ',
+      };
+      const payload = { ...data, students: [student] };
+      const headers = { 'Idempotency-Key': 'student-roster-0001' };
+      assert.equal((await call('/bookings', alice, payload, 'POST', headers)).status, 201);
+      assert.deepEqual(record.students, [
+        {
+          name: 'Nguyễn An',
+          contact: student.phone,
+          height: 165.5,
+          weight: 52.5,
+          pantsSize: '28',
+          shirtSize: 'M',
+          notes: 'Cần thử size.',
+        },
+      ]);
+      assert.equal((await call('/bookings', alice, payload, 'POST', headers)).status, 200);
+      assert.equal(
+        (
+          await call(
+            '/bookings',
+            alice,
+            { ...payload, students: [{ ...student, shirtSize: 'L' }] },
+            'POST',
+            headers,
+          )
+        ).status,
+        409,
+      );
+      const before = bookingCreateCount;
+      for (const students of [
+        {},
+        [null],
+        [{ ...student, name: '' }],
+        [{ ...student, phone: 'abc' }],
+        [{ ...student, height: 251 }],
+        [{ ...student, weight: -1 }],
+        [{ ...student, height: true }],
+        [{ ...student, pantsSize: 'x'.repeat(21) }],
+        [{ ...student, shirtSize: {} }],
+        [{ ...student, notes: 'x'.repeat(501) }],
+        [{ ...student, notes: {} }],
+        [student, student, student],
+      ])
+        assert.equal(
+          (await call('/bookings', alice, { ...data, students })).status,
+          400,
+          JSON.stringify(students),
+        );
+      assert.equal(bookingCreateCount, before);
+    },
+  );
   await t.test('invalid pagination is rejected', async () => {
     assert.equal((await call('/bookings?page=0', alice)).status, 400);
     assert.equal((await call('/bookings?limit=51', alice)).status, 400);

@@ -55,7 +55,15 @@ const paymentSchema = new Schema(
     reference: { type: String, trim: true },
     receivedAt: { type: Date, required: true },
     transaction: { type: Schema.Types.ObjectId, ref: 'Transaction' },
-    recordedBy: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+    source: { type: String, enum: ['manual', 'sepay'], default: 'manual' },
+    providerReceipt: { type: Schema.Types.ObjectId, ref: 'SePayReceipt' },
+    recordedBy: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      required: function () {
+        return (this as any).source !== 'sepay';
+      },
+    },
   },
   { _id: false },
 );
@@ -89,6 +97,9 @@ const memberSchema = new Schema(
     height: { type: Number, min: 1 },
     weight: { type: Number, min: 1 },
     contact: { type: String, trim: true },
+    pantsSize: { type: String, trim: true, maxlength: 20 },
+    shirtSize: { type: String, trim: true, maxlength: 20 },
+    notes: { type: String, trim: true, maxlength: 500 },
     costumeSizes: { type: [memberSizeSchema], default: [] },
   },
   { timestamps: true },
@@ -195,6 +206,25 @@ const workflowSchema = new Schema(
       default: undefined,
     },
     quote: { type: quoteSchema },
+    depositPayment: {
+      type: new Schema(
+        {
+          provider: { type: String, enum: ['sepay'], required: true },
+          mode: { type: String, enum: ['sandbox', 'live'], required: true },
+          reference: { type: String, required: true },
+          bankCode: { type: String, required: true },
+          bankGateway: { type: String, required: true },
+          bankName: { type: String, required: true },
+          accountNumber: { type: String, required: true },
+          accountName: { type: String, required: true },
+          amount: { type: Number, required: true, min: 1 },
+          expiresAt: { type: Date, required: true },
+          createdAt: { type: Date, required: true },
+        },
+        { _id: false },
+      ),
+      default: undefined,
+    },
     packageReservation: {
       type: new Schema(
         {
@@ -280,6 +310,10 @@ workflowSchema.index({ assignedSupportPhotographers: 1, lifecycle: 1 });
 workflowSchema.index({ 'packageReservation.status': 1, 'packageReservation.expiresAt': 1 });
 workflowSchema.index({ 'packageReservation.photographers': 1, 'packageReservation.status': 1 });
 workflowSchema.index({ 'members.requestId': 1 }, { sparse: true });
+workflowSchema.index(
+  { 'depositPayment.reference': 1 },
+  { unique: true, partialFilterExpression: { 'depositPayment.reference': { $type: 'string' } } },
+);
 
 export interface IBookingWorkflow extends mongoose.Document {
   booking: Types.ObjectId;
@@ -289,6 +323,7 @@ export interface IBookingWorkflow extends mongoose.Document {
   assignedPhotographer?: Types.ObjectId;
   assignedSupportPhotographers?: Types.ObjectId[];
   quote?: Record<string, any>;
+  depositPayment?: import('../services/depositPayment').DepositPaymentSnapshot;
   packageReservation?: {
     status: 'held' | 'confirmed' | 'expired' | 'released';
     expiresAt: Date;

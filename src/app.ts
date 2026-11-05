@@ -24,6 +24,7 @@ import workflowRoutes from './routes/workflows';
 import rentalRoutes from './routes/rentals';
 import reportRoutes from './routes/reports';
 import photographerRoutes from './routes/photographerAvailability';
+import paymentRoutes from './routes/payments';
 import { startBookingExpiry } from './services/bookingExpiry';
 import { packageMediaDirectory } from './services/packageMedia';
 
@@ -51,7 +52,8 @@ app.use((_req, res, next) => {
   res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
   next();
 });
-app.use(express.json({ limit: '100kb' }));
+app.use('/api/payments', paymentRoutes);
+app.use(express.json({ limit: '3mb' }));
 app.use(
   '/api/media/packages',
   express.static(packageMediaDirectory(), {
@@ -96,7 +98,11 @@ const PORT = Number(process.env.PORT) || 5000;
 
 connectDB().then(() => {
   startBookingExpiry();
-  app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+  const host =
+    process.env.SEPAY_ENABLED === 'true' && process.env.SEPAY_MODE === 'sandbox'
+      ? '127.0.0.1'
+      : '0.0.0.0';
+  app.listen(PORT, host, () => console.log(`Server running on port ${PORT}`));
 });
 
 export default app;

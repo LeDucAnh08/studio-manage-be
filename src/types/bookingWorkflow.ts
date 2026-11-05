@@ -129,6 +129,7 @@ export interface BookingWorkflowDto {
         amount: number;
         method: string;
         reference?: string;
+        source?: 'manual' | 'sepay';
         receivedAt: string;
       }>;
     };
@@ -201,6 +202,7 @@ export interface BookingWorkflowDto {
     feedback: null | { rating: number; comment?: string; at: string };
     paymentInstructions: PaymentInstructions;
     paymentReady: boolean;
+    depositPayment?: ReturnType<typeof import('../services/depositPayment').depositPaymentDto>;
     events: Array<{ action: string; message: string; at: string }>;
     memberEntry: null | {
       opened: boolean;
