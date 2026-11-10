@@ -27,6 +27,13 @@ import photographerRoutes from './routes/photographerAvailability';
 import paymentRoutes from './routes/payments';
 import { startBookingExpiry } from './services/bookingExpiry';
 import { packageMediaDirectory } from './services/packageMedia';
+import { emailConfig, startEmailWorker } from './services/email';
+import EmailOutbox from './models/EmailOutbox';
+import BookingDeliveryPhoto from './models/BookingDeliveryPhoto';
+import { ensureDeliveryStorage } from './services/bookingDelivery';
+import BookingAlbum from './models/BookingAlbum';
+import BookingAlbumPhoto from './models/BookingAlbumPhoto';
+import BookingAlbumSelection from './models/BookingAlbumSelection';
 
 const envFile = '.env';
 dotenv.config({ path: path.resolve(__dirname, '..', envFile) });
@@ -96,8 +103,16 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
 
 const PORT = Number(process.env.PORT) || 5000;
 
-connectDB().then(() => {
+connectDB().then(async () => {
+  emailConfig();
+  await EmailOutbox.init();
+  await ensureDeliveryStorage();
+  await BookingDeliveryPhoto.init();
+  await BookingAlbum.init();
+  await BookingAlbumPhoto.init();
+  await BookingAlbumSelection.init();
   startBookingExpiry();
+  startEmailWorker();
   const host =
     process.env.SEPAY_ENABLED === 'true' && process.env.SEPAY_MODE === 'sandbox'
       ? '127.0.0.1'

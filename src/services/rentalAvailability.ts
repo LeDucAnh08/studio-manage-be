@@ -10,6 +10,23 @@ export { vietnamDay } from '../utils/rentalPeriod';
 
 const HOLD_STATUSES = ['confirmed', 'checked_out'];
 const SCHEDULE_STATUSES = ['pending', 'confirmed', 'completed'];
+export const rentalHoldFilter = (now = new Date()) => ({
+  $or: [
+    { status: { $in: HOLD_STATUSES } },
+    {
+      status: 'awaiting_deposit',
+      autoCheckout: true,
+      'reservation.status': 'held',
+      'reservation.expiresAt': { $gt: now },
+    },
+    {
+      status: { $in: ['returned', 'completed'] },
+      autoCheckout: true,
+      'quote.turnaroundDays': { $gt: 0 },
+      returnedAt: { $gte: new Date(+now - 15 * 86400000) },
+    },
+  ],
+});
 
 export const rentalReservations = async (
   costumeId: string,
@@ -18,7 +35,7 @@ export const rentalReservations = async (
   excludeBooking?: string,
 ) => {
   const query = RentalOrder.find({
-    status: { $in: HOLD_STATUSES },
+    ...rentalHoldFilter(),
     'quote.lines.costumeId': costumeId,
     ...(exclude ? { _id: { $ne: exclude } } : {}),
   });
@@ -36,10 +53,10 @@ export const loadRentalHolds = async (
 ): Promise<{ orders: any[]; schedules: any[] }> => {
   if (!costumeIds.length) return { orders: [], schedules: [] };
   const orders = RentalOrder.find({
-    status: { $in: HOLD_STATUSES },
+    ...rentalHoldFilter(),
     'quote.lines.costumeId': { $in: costumeIds },
     ...(exclude ? { _id: { $ne: exclude } } : {}),
-  }).select('status quote.lines quote.receiveDate quote.returnDate');
+  }).select('status autoCheckout reservation returnedAt returns quote');
   const schedules = Schedule.find({
     $or: [
       { costumes: { $in: costumeIds } },
@@ -66,17 +83,41 @@ export const rentalUsed = (
   today = vietnamDay(new Date()),
 ): number =>
   orders.reduce((sum, order) => {
-    if (!HOLD_STATUSES.includes(order.status) || !order.quote) return sum;
+    const temporary =
+      order.autoCheckout &&
+      order.status === 'awaiting_deposit' &&
+      order.reservation?.status === 'held' &&
+      +new Date(order.reservation.expiresAt) > Date.now();
+    const cleaning =
+      order.autoCheckout &&
+      ['returned', 'completed'].includes(order.status) &&
+      order.returnedAt &&
+      order.quote?.turnaroundDays > 0;
+    if ((!HOLD_STATUSES.includes(order.status) && !temporary && !cleaning) || !order.quote)
+      return sum;
     const start = vietnamDay(order.quote.receiveDate);
-    const end = vietnamDay(order.quote.returnDate);
+    const end = new Date(
+      +vietnamDay(cleaning ? order.returnedAt : order.quote.returnDate) +
+        (order.quote.turnaroundDays ?? 0) * 86400000,
+    );
     // Checked-out garments remain unavailable until staff records their actual return.
-    const overdue = order.status === 'checked_out' && end < today;
+    const overdue = order.status === 'checked_out' && vietnamDay(order.quote.returnDate) < today;
     if (date < start || (!overdue && date > end)) return sum;
     return (
       sum +
       order.quote.lines
         .filter((row: any) => String(row.costumeId) === costumeId && row.size === size)
-        .reduce((count: number, row: any) => count + row.quantity, 0)
+        .reduce(
+          (count: number, row: any) =>
+            count +
+            (cleaning
+              ? (order.returns?.find(
+                  (item: any) =>
+                    String(item.costumeId) === String(row.costumeId) && item.size === row.size,
+                )?.good ?? 0)
+              : row.quantity),
+          0,
+        )
     );
   }, 0);
 
@@ -120,7 +161,7 @@ const goodQuantity = (inventory: any[], size: string): number =>
 
 export const getRentalAvailability = (
   costume: { _id: unknown; inventory?: any[] },
-  period: { receiveDate: Date; returnDate: Date },
+  period: { receiveDate: Date; returnDate: Date; turnaroundDays?: number },
   orders: any[],
   schedules: any[],
   today = vietnamDay(new Date()),
@@ -132,7 +173,8 @@ export const getRentalAvailability = (
     let remaining = good;
     for (
       let t = vietnamDay(period.receiveDate).getTime();
-      remaining > 0 && t <= vietnamDay(period.returnDate).getTime();
+      remaining > 0 &&
+      t <= vietnamDay(period.returnDate).getTime() + (period.turnaroundDays ?? 0) * 86400000;
       t += 86400000
     ) {
       const usage = rentalUsageOnDay(

@@ -4,6 +4,7 @@ import BookingWorkflow from '../models/BookingWorkflow';
 import Schedule from '../models/Schedule';
 import { withResourceTransaction } from './workflowTransactions';
 import { vietnamDay } from '../utils/rentalPeriod';
+import { expireRentalReservations } from './rentalCheckout';
 
 export const BOOKING_EXPIRY_REASON =
   'Tự động hủy vì đã quá ngày chụp dự kiến mà yêu cầu chưa được duyệt.';
@@ -66,6 +67,7 @@ export const expirePendingBookings = async (now = new Date()): Promise<number> =
   const filter = { status: 'pending', startAt: { $lt: bookingExpiryCutoff(now) } };
   const expired = await Booking.find(filter).select('_id').lean();
   let count = await expirePackageReservations(now);
+  count += await expireRentalReservations(now);
   for (const candidate of expired) {
     const cancelled = await withResourceTransaction(async (session) => {
       const booking = await Booking.findOne({ ...filter, _id: candidate._id }).session(session);

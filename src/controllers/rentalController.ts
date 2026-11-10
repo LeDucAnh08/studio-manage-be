@@ -3,12 +3,22 @@ import { Request, Response } from 'express';
 import { ClientSession, isValidObjectId, Types } from 'mongoose';
 import RentalOrder from '../models/RentalOrder';
 import Costume from '../models/Costume';
-import Category from '../models/Category';
-import Transaction from '../models/Transaction';
 import { sendResponse } from '../utils/response';
 import { withResourceTransaction, WorkflowProblem } from '../services/workflowTransactions';
 import { ensureRentalAvailability, vietnamDay } from '../services/rentalAvailability';
 import { readRentalPeriod, rentalDays } from '../utils/rentalPeriod';
+import { rentalPolicy } from '../services/rentalPolicy';
+import { getRentalStage, rentalViewStatuses } from '../services/rentalStages';
+import {
+  automaticRentalQuote,
+  rentalPaymentSnapshot,
+  rentalPaymentDto,
+  rentalPaid,
+  recordRentalMoney,
+  confirmAutomaticRental,
+  expireRentalOrder,
+  auditRentalFulfillment,
+} from '../services/rentalCheckout';
 
 const roles = (req: Request, ...allowed: number[]) =>
   req.user!.roles.some((role) => allowed.includes(role));
@@ -55,13 +65,15 @@ const net = (order: any): number =>
     0,
   );
 const payable = (order: any): number =>
-  order.status === 'cancelled'
-    ? order.change.finalFee
-    : order.returnedAt
-      ? order.settlement?.acceptedAt
-        ? order.settlement.total
-        : order.quote.fee
-      : order.quote.fee + order.quote.deposit;
+  ['expired', 'payment_review'].includes(order.status) && order.autoCheckout
+    ? 0
+    : order.status === 'cancelled'
+      ? (order.change?.finalFee ?? 0)
+      : order.returnedAt
+        ? order.settlement?.acceptedAt
+          ? order.settlement.total
+          : order.quote.fee
+        : order.quote.fee + order.quote.deposit;
 const financials = (order: any) => {
   const received = net(order),
     total = payable(order);
@@ -70,7 +82,9 @@ const financials = (order: any) => {
     payable: total,
     due: Math.max(0, total - received),
     refundDue:
-      order.status === 'cancelled' || order.settlement?.acceptedAt
+      ['cancelled', 'expired', 'payment_review'].includes(order.status) ||
+      order.settlement?.acceptedAt ||
+      (order.autoCheckout && !order.returnedAt)
         ? Math.max(0, received - total)
         : 0,
   };
@@ -94,7 +108,12 @@ const dto = (order: any, req: Request) => {
     _id: order._id,
     version: order.version,
     status: order.status,
+    orderStage: getRentalStage(order.status),
     pricingMode: order.pricingMode,
+    autoCheckout: !!order.autoCheckout,
+    changesLocked: rentalPaid(order),
+    reservation: order.reservation,
+    depositPayment: finance ? rentalPaymentDto(order) : undefined,
     reservationIssue: order.reservationIssue,
     contactName: order.contactName,
     phone: roles(req, 5) && !roles(req, 0, 1, 2, 4, 6) ? undefined : order.phone,
@@ -136,7 +155,7 @@ const dto = (order: any, req: Request) => {
 };
 const owned = async (req: Request, session?: ClientSession) => {
   assert(isValidObjectId(req.params.id), 'Không tìm thấy đơn thuê.', 404);
-  const query = RentalOrder.findById(req.params.id);
+  const query = RentalOrder.findById(req.params.id).select('+depositPayment');
   if (session) query.session(session);
   const order: any = await query;
   assert(
@@ -210,6 +229,10 @@ const completeIfSettled = (order: any) => {
 };
 
 const confirmPaidDailyRental = async (order: any, req: Request, session: ClientSession) => {
+  if (order.autoCheckout) {
+    await confirmAutomaticRental(order, session);
+    return;
+  }
   if (
     order.pricingMode !== 'daily' ||
     order.status !== 'ready_to_confirm' ||
@@ -257,6 +280,8 @@ export const createRental = async (req: Request, res: Response): Promise<void> =
       // Snapshot price is deliberately excluded: a catalog update must not break a retry.
       const fingerprint = hash({
         ...input,
+        termsAccepted: req.body.termsAccepted,
+        policyVersion: req.body.policyVersion,
         lines: req.body.lines.map((row: any) => ({
           costumeId: row?.costumeId,
           size: row?.size,
@@ -266,16 +291,39 @@ export const createRental = async (req: Request, res: Response): Promise<void> =
       const existing: any = await RentalOrder.findOne({
         client: req.user!._id,
         creationKey,
-      }).session(session);
+      })
+        .select('+depositPayment')
+        .session(session);
       if (existing) {
         assert(existing.creationFingerprint === fingerprint, 'Khóa gửi đã dùng cho nội dung khác.');
         result = existing;
         replay = true;
         return;
       }
+      const policy = rentalPolicy();
+      assert(
+        req.body.termsAccepted === true && req.body.policyVersion === policy.version,
+        'Vui lòng đọc và đồng ý điều khoản thuê hiện hành.',
+        400,
+      );
+      const waiting = await RentalOrder.countDocuments({
+        client: req.user!._id,
+        autoCheckout: true,
+        status: 'awaiting_deposit',
+        'reservation.status': 'held',
+        'reservation.expiresAt': { $gt: new Date() },
+      }).session(session);
+      assert(
+        waiting < policy.maxPending,
+        `Bạn đang có ${policy.maxPending} đơn chờ cọc. Hoàn tất hoặc chờ hết hạn trước khi đặt thêm.`,
+        409,
+      );
       assert(input.receiveDate >= vietnamDay(new Date()), 'Ngày nhận phải từ hôm nay.', 400);
       const lines = await readLines(req.body.lines, session, false, true);
-      await ensureRentalAvailability({ lines, ...input }, session);
+      const automaticQuote = await automaticRentalQuote(lines, input, session);
+      await ensureRentalAvailability(automaticQuote, session);
+      const expiresAt = new Date(Date.now() + policy.holdMinutes * 60000);
+      const payment = rentalPaymentSnapshot(automaticQuote.deposit, expiresAt);
       [result] = await RentalOrder.create(
         [
           {
@@ -286,6 +334,12 @@ export const createRental = async (req: Request, res: Response): Promise<void> =
             phone: input.phone,
             note: input.note,
             pricingMode: 'daily',
+            autoCheckout: true,
+            policyVersion: policy.version,
+            status: automaticQuote.deposit > 0 ? 'awaiting_deposit' : 'confirmed',
+            quote: automaticQuote,
+            reservation: { status: automaticQuote.deposit > 0 ? 'held' : 'confirmed', expiresAt },
+            depositPayment: payment,
             requestedLines: lines,
             requestedReceiveDate: input.receiveDate,
             requestedReturnDate: input.returnDate,
@@ -293,7 +347,8 @@ export const createRental = async (req: Request, res: Response): Promise<void> =
               {
                 action: 'requested',
                 at: new Date(),
-                message: 'Khách gửi yêu cầu thuê; chưa giữ hàng.',
+                message:
+                  'Khách đồng ý giá và điều khoản thuê. Hệ thống đã giữ hàng; vui lòng đặt cọc trong hạn.',
               },
             ],
           },
@@ -328,27 +383,15 @@ export const listRentals = async (req: Request, res: Response): Promise<void> =>
     );
     const view = req.query.view ?? '';
     assert(
-      typeof view === 'string' &&
-        ['', 'active', 'completed', 'cancelled', 'rejected'].includes(view),
+      typeof view === 'string' && (view === '' || !!rentalViewStatuses(view)),
       'Bộ lọc trạng thái không hợp lệ.',
       400,
     );
     const filter: Record<string, unknown> = roles(req, 6) ? { client: req.user!._id } : {};
-    if (view === 'active')
-      filter.status = {
-        $in: [
-          'requested',
-          'quoting',
-          'awaiting_deposit',
-          'ready_to_confirm',
-          'confirmed',
-          'checked_out',
-          'returned',
-        ],
-      };
-    else if (view) filter.status = view;
+    if (view) filter.status = { $in: rentalViewStatuses(view as string) };
     const [rows, total] = await Promise.all([
       RentalOrder.find(filter)
+        .select('+depositPayment')
         .sort({ updatedAt: -1 })
         .skip((page - 1) * limit)
         .limit(limit)
@@ -385,6 +428,7 @@ export const actRental = async (req: Request, res: Response): Promise<void> => {
       withdraw: roles(req, 6),
       'resources.confirm': roles(req, 0, 1),
       'payment.record': roles(req, 0, 1, 5),
+      'fulfillment.refund': roles(req, 0, 1),
       handover: roles(req, 0, 1),
       return: roles(req, 0, 1),
       'settlement.propose': roles(req, 0, 1),
@@ -420,6 +464,27 @@ export const actRental = async (req: Request, res: Response): Promise<void> => {
         'Hồ sơ đã thay đổi. Tải lại trước khi thao tác.',
       );
       const quote = order.quote;
+      if (
+        order.autoCheckout &&
+        [
+          'change.request',
+          'change.propose',
+          'change.accept',
+          'quote.propose',
+          'quote.accept',
+          'reject',
+        ].includes(action)
+      )
+        throw new WorkflowProblem(
+          409,
+          rentalPaid(order)
+            ? 'Đã ghi nhận cọc: không được hủy hoặc thay đổi mẫu, size, số lượng, ngày thuê hay gia hạn.'
+            : 'Đơn thuê tự động không dùng báo giá hoặc đổi đơn. Hãy rút đơn chưa cọc và đặt lại.',
+        );
+      assert(
+        !expireRentalOrder(order) || ['payment.record', 'fulfillment.refund'].includes(action),
+        'Đơn đã hết hạn giữ hàng.',
+      );
       switch (action) {
         case 'quote.propose': {
           assert(
@@ -475,8 +540,10 @@ export const actRental = async (req: Request, res: Response): Promise<void> => {
           break;
         case 'withdraw':
           assert(
-            ['requested', 'quoting'].includes(order.status) && !quote?.acceptedAt,
-            'Chỉ rút yêu cầu trước khi đồng ý báo giá.',
+            order.autoCheckout
+              ? !rentalPaid(order) && order.status === 'awaiting_deposit'
+              : ['requested', 'quoting'].includes(order.status) && !quote?.acceptedAt,
+            'Chỉ rút đơn khi chưa ghi nhận cọc/thanh toán.',
           );
           order.change = {
             kind: 'cancel',
@@ -488,6 +555,27 @@ export const actRental = async (req: Request, res: Response): Promise<void> => {
             acceptedAt: new Date(),
           };
           order.status = 'cancelled';
+          if (order.autoCheckout) order.reservation.status = 'released';
+          break;
+        case 'fulfillment.refund':
+          assert(
+            order.autoCheckout &&
+              !order.checkedOutAt &&
+              ['awaiting_deposit', 'expired', 'payment_review', 'confirmed'].includes(order.status),
+            'Chỉ xử lý không thể giao trước khi bàn giao.',
+          );
+          order.reservationIssue = text(body.note, 1000, true);
+          order.change = {
+            kind: 'cancel',
+            status: 'applied',
+            finalFee: 0,
+            terms: [],
+            note: 'Studio không thể giao hàng: ' + order.reservationIssue,
+            at: new Date(),
+            acceptedAt: new Date(),
+          };
+          order.status = 'cancelled';
+          order.reservation.status = 'released';
           break;
         case 'resources.confirm':
           assert(
@@ -524,7 +612,9 @@ export const actRental = async (req: Request, res: Response): Promise<void> => {
             target = payable(order);
           if (kind === 'refund')
             assert(
-              (order.status === 'cancelled' || order.settlement?.acceptedAt) &&
+              (['cancelled', 'expired', 'payment_review'].includes(order.status) ||
+                order.settlement?.acceptedAt ||
+                (order.autoCheckout && !order.returnedAt && before > target)) &&
                 amount <= before - target,
               'Chỉ hoàn số dư sau khi khách đồng ý đối soát/hủy.',
             );
@@ -539,46 +629,17 @@ export const actRental = async (req: Request, res: Response): Promise<void> => {
                 order.status === 'awaiting_deposit' && amount <= quote.deposit - before,
                 'Khoản cọc vượt số cọc còn thiếu.',
               );
+            if (order.autoCheckout && method === 'bank_transfer' && order.depositPayment)
+              throw new WorkflowProblem(
+                409,
+                'Khoản thu chuyển khoản của đơn tự động phải ghi nhận qua SePay hoặc màn đối soát giao dịch ngân hàng, tránh thu trùng.',
+              );
           }
-          const type = kind === 'refund' ? 'expense' : 'income';
-          const name =
-            kind === 'refund'
-              ? 'Hoàn cọc thuê'
-              : kind === 'deposit'
-                ? 'Cọc thuê'
-                : 'Thanh toán thuê';
-          let category = await Category.findOne({ name, type }).session(session);
-          if (!category)
-            [category] = await Category.create(
-              [{ name, type, isDefault: true, createdBy: req.user!._id }],
-              { session },
-            );
-          const paymentId = new Types.ObjectId();
-          const [transaction] = await Transaction.create(
-            [
-              {
-                rentalOrder: order._id,
-                rentalPayment: paymentId,
-                amount,
-                type,
-                categoryId: category._id,
-                date: new Date(),
-                createdBy: req.user!._id,
-                description: `Đơn thuê ${order._id}`,
-              },
-            ],
-            { session },
+          await recordRentalMoney(
+            order,
+            { kind, amount, method, reference: text(body.reference, 160), actor: req.user!._id },
+            session,
           );
-          order.payments.push({
-            _id: paymentId,
-            kind,
-            amount,
-            method,
-            reference: text(body.reference, 160),
-            at: new Date(),
-            actor: req.user!._id,
-            transaction: transaction._id,
-          });
           if (order.status === 'awaiting_deposit' && net(order) >= quote.deposit)
             order.status = 'ready_to_confirm';
           completeIfSettled(order);
@@ -591,6 +652,16 @@ export const actRental = async (req: Request, res: Response): Promise<void> => {
             'Đơn chưa sẵn sàng giao hoặc đang xử lý thay đổi.',
           );
           const today = vietnamDay(new Date());
+          if (order.autoCheckout) {
+            const policy = rentalPolicy();
+            const hour = new Date(Date.now() + 7 * 3600000).getUTCHours();
+            assert(
+              hour >= policy.openHour &&
+                hour < policy.closeHour &&
+                !policy.closedWeekdays.includes(new Date(Date.now() + 7 * 3600000).getUTCDay()),
+              'Chỉ giao trong khung giờ studio phục vụ.',
+            );
+          }
           assert(
             quote.receiveDate <= today && quote.returnDate >= today,
             'Chỉ giao trong kỳ thuê đã chốt.',
@@ -841,6 +912,8 @@ export const actRental = async (req: Request, res: Response): Promise<void> => {
         withdraw: 'Khách rút yêu cầu thuê trước khi đồng ý báo giá.',
         'resources.confirm': 'Studio xác nhận giữ hàng.',
         'payment.record': 'Đã ghi nhận giao dịch.',
+        'fulfillment.refund':
+          'Studio xác nhận không thể giao; giải phóng giữ hàng và xử lý hoàn tiền.',
         handover: 'Studio đã giao hàng.',
         return: 'Studio đã kiểm tra và nhận trả hàng.',
         'settlement.propose': 'Studio gửi đối soát phí thuê/phát sinh.',
@@ -855,6 +928,11 @@ export const actRental = async (req: Request, res: Response): Promise<void> => {
       order.commands.push({ key: commandKey, actor: req.user!._id, fingerprint, action });
       order.version += 1;
       await order.save({ session });
+      if (action === 'return')
+        await auditRentalFulfillment(
+          order.quote.lines.map((line: any) => String(line.costumeId)),
+          session,
+        );
       result = order;
     });
     sendResponse(res, 200, true, 'Đã cập nhật đơn thuê.', dto(result.toObject(), req));

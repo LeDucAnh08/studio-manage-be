@@ -217,6 +217,7 @@ test('public catalog filters daily prices and exposes only safe availability fie
       category: 'Đạo cụ',
       rentalPrice: 50000,
       rentalDailyPrice: 20000,
+      rentalSecurityDeposit: null,
       rentalDays: 3,
       availableBySize: { FREE: 5 },
       sizes: ['FREE'],

@@ -20,6 +20,15 @@ export interface IUser extends Document {
   password: string;
   roles: UserRole[];
   isActive: boolean;
+  email?: string;
+  emailVerifiedAt?: Date;
+  emailVerification?: {
+    tokenHash: string;
+    expiresAt: Date;
+    requestedAt: Date;
+    windowAt: Date;
+    count: number;
+  };
   notificationReadAt?: Date;
   sourceAccountRequest?: Types.ObjectId;
   telegramId?: string;
@@ -33,6 +42,15 @@ const userSchema = new Schema<IUser>(
   {
     username: { type: String, required: true, unique: true, trim: true },
     name: { type: String, trim: true },
+    email: { type: String, trim: true, lowercase: true, maxlength: 254 },
+    emailVerifiedAt: Date,
+    emailVerification: {
+      type: new Schema(
+        { tokenHash: String, expiresAt: Date, requestedAt: Date, windowAt: Date, count: Number },
+        { _id: false },
+      ),
+      select: false,
+    },
     password: { type: String, required: true, select: false },
     roles: { type: [{ type: Number, enum: [0, 1, 2, 3, 4, 5, 6] }], default: [2] },
     notificationReadAt: { type: Date },

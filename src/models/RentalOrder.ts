@@ -15,6 +15,7 @@ const quote = new Schema(
     version: Number,
     pricingMode: { type: String, enum: ['daily', 'period'] },
     rentalDays: Number,
+    turnaroundDays: Number,
     lines: [line],
     receiveDate: Date,
     returnDate: Date,
@@ -41,6 +42,14 @@ const schema = new Schema(
     client: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     version: { type: Number, default: 0 },
     pricingMode: { type: String, enum: ['daily', 'period'] },
+    autoCheckout: { type: Boolean, default: false },
+    paymentLockedAt: Date,
+    policyVersion: String,
+    reservation: {
+      status: { type: String, enum: ['held', 'confirmed', 'expired', 'released'] },
+      expiresAt: Date,
+    },
+    depositPayment: { type: Schema.Types.Mixed, select: false },
     reservationIssue: String,
     creationKey: { type: String, required: true },
     creationFingerprint: { type: String, required: true },
@@ -64,6 +73,8 @@ const schema = new Schema(
         'completed',
         'cancelled',
         'rejected',
+        'expired',
+        'payment_review',
       ],
       index: true,
     },
@@ -78,6 +89,7 @@ const schema = new Schema(
         at: Date,
         actor: Schema.Types.ObjectId,
         transaction: { type: Schema.Types.ObjectId, ref: 'Transaction' },
+        providerReceipt: { type: Schema.Types.ObjectId, ref: 'SePayReceipt' },
       },
     ],
     checkedOutAt: Date,
@@ -118,4 +130,9 @@ const schema = new Schema(
   { timestamps: true },
 );
 schema.index({ client: 1, creationKey: 1 }, { unique: true });
+schema.index(
+  { 'depositPayment.reference': 1 },
+  { unique: true, partialFilterExpression: { 'depositPayment.reference': { $type: 'string' } } },
+);
+schema.index({ autoCheckout: 1, status: 1, 'reservation.expiresAt': 1 });
 export default mongoose.model('RentalOrder', schema);

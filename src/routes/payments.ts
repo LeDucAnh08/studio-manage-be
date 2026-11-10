@@ -1,4 +1,4 @@
-import { Router, raw } from 'express';
+import { Router, raw, json } from 'express';
 import { protect } from '../middleware/auth';
 import { requireRole } from '../middleware/role';
 import { asyncHandler } from '../middleware/asyncHandler';
@@ -7,8 +7,86 @@ import { WorkflowProblem } from '../services/workflowTransactions';
 import SePayReceipt from '../models/SePayReceipt';
 import { boundedInteger } from '../utils/input';
 import { sendResponse } from '../utils/response';
+import { isValidObjectId } from 'mongoose';
+import { sepayConfig, sandboxUiEnabled } from '../services/depositPayment';
+import { withResourceTransaction } from '../services/workflowTransactions';
+import { applyRentalReceipt } from '../services/rentalCheckout';
+import { simulateSandboxDeposit } from '../services/sepaySandbox';
 
 const router = Router();
+router.post(
+  '/sepay/sandbox/simulate',
+  (_req, res, next) => {
+    if (!sandboxUiEnabled()) {
+      sendResponse(res, 404, false, 'Không có chức năng này.');
+      return;
+    }
+    next();
+  },
+  protect,
+  requireRole(0, 1, 5, 6),
+  json({ limit: '2kb' }),
+  asyncHandler(async (req, res) => {
+    try {
+      const result = await simulateSandboxDeposit(
+        req.user!,
+        req.body?.reference,
+        req.get('Idempotency-Key'),
+      );
+      sendResponse(res, 200, true, 'Đã tạo giao dịch thử; không chuyển tiền thật.', result);
+    } catch (error) {
+      if (!(error instanceof WorkflowProblem)) throw error;
+      sendResponse(res, error.status, false, error.message);
+    }
+  }),
+);
+router.post(
+  '/sepay/receipts/:id/resolve-rental',
+  protect,
+  requireRole(0, 1, 5),
+  json({ limit: '4kb' }),
+  asyncHandler(async (req, res) => {
+    try {
+      const { rentalId, note } = req.body || {};
+      if (
+        !isValidObjectId(req.params.id) ||
+        !isValidObjectId(rentalId) ||
+        typeof note !== 'string' ||
+        !note.trim() ||
+        note.length > 1000
+      )
+        throw new WorkflowProblem(400, 'Cần mã đơn thuê và ghi chú đối soát hợp lệ.');
+      await withResourceTransaction(async (session) => {
+        const receipt = await SePayReceipt.findById(req.params.id).session(session);
+        if (!receipt || receipt.direction !== 'in' || receipt.hasConflict || receipt.booking)
+          throw new WorkflowProblem(409, 'Giao dịch không đủ điều kiện đối soát đơn thuê.');
+        if (receipt.status === 'applied') {
+          if (String(receipt.rentalOrder) !== rentalId)
+            throw new WorkflowProblem(409, 'Giao dịch đã được ghi nhận cho đơn khác.');
+          return;
+        }
+        if (receipt.status !== 'review')
+          throw new WorkflowProblem(409, 'Giao dịch chưa ở trạng thái cần đối soát.');
+        if (receipt.rentalOrder && String(receipt.rentalOrder) !== rentalId)
+          throw new WorkflowProblem(
+            409,
+            'Không được chuyển tiền đã khớp mã đơn thuê sang đơn khác.',
+          );
+        await applyRentalReceipt(receipt, session, sepayConfig(), rentalId);
+        if (String(receipt.status) !== 'applied')
+          throw new WorkflowProblem(409, receipt.reason || 'Chưa thể đối soát giao dịch.');
+        receipt.resolvedBy = req.user!._id;
+        receipt.resolutionNote = note.trim();
+        receipt.resolvedAt = new Date();
+        await receipt.save({ session });
+      });
+      sendResponse(res, 200, true, 'Đã đối soát giao dịch vào đơn thuê.');
+    } catch (error) {
+      if (!(error instanceof WorkflowProblem)) throw error;
+      sendResponse(res, error.status, false, error.message);
+    }
+  }),
+);
 // Mount this router before the global JSON parser: signatures cover original bytes.
 router.post(
   '/sepay/webhook',

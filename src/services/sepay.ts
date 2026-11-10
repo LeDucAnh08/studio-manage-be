@@ -6,6 +6,7 @@ import SePayReceipt from '../models/SePayReceipt';
 import { recordWorkflowPayment } from '../controllers/workflowController';
 import { normalizeBankGateway, sepayConfig } from './depositPayment';
 import { WorkflowProblem, withResourceTransaction } from './workflowTransactions';
+import { applyRentalReceipt } from './rentalCheckout';
 
 export function authenticateSePay(body: Buffer, signature: unknown, timestamp: unknown) {
   const config = sepayConfig();
@@ -74,7 +75,7 @@ export function parseSePayPayload(input: unknown) {
 }
 
 const referenceFrom = (content: string, code?: string) => {
-  const matches = [...new Set(content.toUpperCase().match(/\bYUME[A-F0-9]{16}\b/g) ?? [])];
+  const matches = [...new Set(content.toUpperCase().match(/\b(?:YUME|RENT)[A-F0-9]{16}\b/g) ?? [])];
   if (matches.length !== 1 || (code && code.toUpperCase() !== matches[0])) return null;
   return matches[0];
 };
@@ -87,6 +88,8 @@ export async function processSePayReceipt(receiptId: string | Types.ObjectId) {
       if (!receipt || receipt.status !== 'pending') return;
       let reason: string | undefined;
       const reference = referenceFrom(receipt.content);
+      if (reference?.startsWith('RENT') && (await applyRentalReceipt(receipt, session, config)))
+        return;
       const workflow = reference
         ? await BookingWorkflow.findOne({ 'depositPayment.reference': reference }).session(session)
         : null;

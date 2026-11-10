@@ -24,6 +24,7 @@ test('rentals are open by default and ignore the removed switch while enforcing 
   t.mock.method(RentalOrder, 'find', (filter) => {
     lastFilter = filter;
     const query = {
+      select: () => query,
       sort: () => query,
       skip: () => query,
       limit: () => query,
@@ -66,25 +67,17 @@ test('rentals are open by default and ignore the removed switch while enforcing 
     );
   }
   assert.equal((await call()).status, 401);
-  for (const view of ['active', 'completed', 'cancelled', 'rejected']) {
+  const { rentalStageStatuses, rentalViewStatuses } = require('../src/services/rentalStages');
+  for (const view of [
+    ...Object.keys(rentalStageStatuses),
+    'active',
+    'rejected',
+    'expired',
+    'payment_review',
+  ]) {
     assert.equal((await call(clientId, 'GET', `?page=2&view=${view}`)).status, 200);
     assert.equal(lastFilter.client, clientId, 'Status filtering must preserve customer ownership');
-    assert.deepEqual(
-      lastFilter.status,
-      view === 'active'
-        ? {
-            $in: [
-              'requested',
-              'quoting',
-              'awaiting_deposit',
-              'ready_to_confirm',
-              'confirmed',
-              'checked_out',
-              'returned',
-            ],
-          }
-        : view,
-    );
+    assert.deepEqual(lastFilter.status, { $in: rentalViewStatuses(view) });
   }
   for (const query of ['?view=unknown', '?view[$ne]=completed', '?view=active&view=completed'])
     assert.equal((await call(clientId, 'GET', query)).status, 400);

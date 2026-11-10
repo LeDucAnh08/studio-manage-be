@@ -40,6 +40,7 @@ export interface CostumeInput {
   isRentalItem?: boolean;
   rentalPrice?: number;
   rentalDailyPrice?: number | null;
+  rentalSecurityDeposit?: number | null;
   inventory?: CostumeInventoryInput[];
 }
 
@@ -69,6 +70,7 @@ export const readCostumeInput = (body: unknown, partial = false): InputResult<Co
     'isRentalItem',
     'rentalPrice',
     'rentalDailyPrice',
+    'rentalSecurityDeposit',
     'inventory',
   ]);
   if (Object.keys(body).some((key) => !allowed.has(key))) {
@@ -134,6 +136,16 @@ export const readCostumeInput = (body: unknown, partial = false): InputResult<Co
         return { ok: false, error: 'Giá thuê/ngày phải là số nguyên dương hoặc để trống' };
       value.rentalDailyPrice = price;
     }
+  }
+
+  if (body.rentalSecurityDeposit !== undefined) {
+    const deposit =
+      body.rentalSecurityDeposit === null
+        ? null
+        : parseNonNegativeInteger(body.rentalSecurityDeposit);
+    if (deposit === null && body.rentalSecurityDeposit !== null)
+      return { ok: false, error: 'Cọc bảo đảm phải là số nguyên không âm hoặc để trống' };
+    value.rentalSecurityDeposit = deposit;
   }
 
   if (body.inventory !== undefined) {

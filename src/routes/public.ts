@@ -15,8 +15,17 @@ import { getRentalAvailability, loadRentalHolds } from '../services/rentalAvaila
 import { vietnamDay } from '../utils/rentalPeriod';
 import { asyncHandler } from '../middleware/asyncHandler';
 import { getPublicPackage, validatePackageId } from '../controllers/packageContentController';
+import { publicAlbumRoutes } from './bookingAlbum';
+import { rentalPolicy } from '../services/rentalPolicy';
 
 const router = Router();
+router.get(
+  '/rental-policy',
+  asyncHandler(async (_req, res) => {
+    sendResponse(res, 200, true, 'OK', rentalPolicy());
+  }),
+);
+router.use('/albums/:publicId', publicAlbumRoutes);
 
 const hasCustomerAccess = async (customerId: string, access: unknown): Promise<boolean> => {
   if (typeof access !== 'string' || !access) return false;

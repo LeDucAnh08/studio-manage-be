@@ -81,7 +81,10 @@ export const resourceTransactionsRequired = async (): Promise<boolean> =>
       .findOne(activeBookingHoldFilter(), { projection: { _id: 1 } })) ||
       !!(await mongoose.connection
         .collection('rentalorders')
-        .findOne({ status: { $in: ['confirmed', 'checked_out'] } }, { projection: { _id: 1 } })) ||
+        .findOne(
+          { status: { $in: ['confirmed', 'checked_out', 'awaiting_deposit'] } },
+          { projection: { _id: 1 } },
+        )) ||
       !!(await mongoose.connection.collection('schedules').findOne(
         {
           workflowBooking: { $exists: true, $ne: null },

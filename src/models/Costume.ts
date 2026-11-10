@@ -10,6 +10,7 @@ export interface ICostume extends Document {
   isRentalItem: boolean;
   rentalPrice: number;
   rentalDailyPrice?: number | null;
+  rentalSecurityDeposit?: number | null;
   inventory: Array<{
     size: string;
     quantity: number;
@@ -92,6 +93,15 @@ const costumeSchema = new Schema<ICostume>(
       },
     },
     inventory: { type: [inventorySchema], default: [] },
+    rentalSecurityDeposit: {
+      type: Number,
+      default: null,
+      validate: {
+        validator: (value: number | null) =>
+          value === null || (Number.isSafeInteger(value) && value >= 0),
+        message: 'Cọc bảo đảm phải là số nguyên không âm hoặc để trống',
+      },
+    },
   },
   { timestamps: true },
 );

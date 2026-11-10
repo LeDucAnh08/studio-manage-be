@@ -23,6 +23,7 @@ export type BookingWorkflowAction =
   | 'progress.update'
   | 'revision.request'
   | 'delivery.accept'
+  | 'delivery.revision.start'
   | 'feedback.submit'
   | 'change.request'
   | 'change.propose'

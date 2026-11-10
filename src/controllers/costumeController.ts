@@ -14,6 +14,7 @@ import {
   loadRentalHolds,
 } from '../services/rentalAvailability';
 import { readRentalPeriod } from '../utils/rentalPeriod';
+import { rentalPolicy } from '../services/rentalPolicy';
 import { Types } from 'mongoose';
 import {
   withResourceTransaction,
@@ -242,7 +243,9 @@ export const getPublicCatalog = async (req: Request, res: Response): Promise<voi
   if (Object.keys(price).length) filter.rentalDailyPrice = { ...price, $gt: 0 };
 
   const costumes = await Costume.find(filter)
-    .select('name description imageUrl gender itemKind rentalPrice rentalDailyPrice type inventory')
+    .select(
+      'name description imageUrl gender itemKind rentalPrice rentalDailyPrice rentalSecurityDeposit type inventory',
+    )
     .populate('type', 'name')
     .sort({ name: 1 })
     .lean();
@@ -253,7 +256,12 @@ export const getPublicCatalog = async (req: Request, res: Response): Promise<voi
   // Availability is public; reservation identities and internal inventory condition stay private.
   const catalog = costumes.flatMap((costume) => {
     const type = costume.type as unknown as { _id?: unknown; name?: string } | null;
-    const availableBySize = getRentalAvailability(costume, period, orders, schedules);
+    const availableBySize = getRentalAvailability(
+      costume,
+      { ...period, turnaroundDays: rentalPolicy().turnaroundDays },
+      orders,
+      schedules,
+    );
     const sizes = Object.keys(availableBySize).sort();
     if (!sizes.length || (parsed.value.size && !availableBySize[parsed.value.size])) return [];
     return [
@@ -267,6 +275,7 @@ export const getPublicCatalog = async (req: Request, res: Response): Promise<voi
         categoryId: type?._id ? String(type._id) : null,
         category: type?.name ?? null,
         rentalPrice: costume.rentalPrice ?? 0,
+        rentalSecurityDeposit: costume.rentalSecurityDeposit ?? null,
         rentalDailyPrice:
           Number.isSafeInteger(costume.rentalDailyPrice) && (costume.rentalDailyPrice ?? 0) > 0
             ? costume.rentalDailyPrice

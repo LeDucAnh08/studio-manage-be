@@ -517,4 +517,39 @@ test('automatic SePay package deposits authenticate, deduplicate and confirm ato
       assert.equal((await detail(id)).workflow.depositPayment.qrUrl, null);
     },
   );
+  await t.test(
+    'local demo button also confirms a booking deposit with ownership and idempotency',
+    async () => {
+      const previous = process.env.NODE_ENV;
+      process.env.NODE_ENV = 'development';
+      process.env.SEPAY_DEMO_UI = 'true';
+      try {
+        const id = await make();
+        const reference = (await detail(id)).workflow.depositPayment.reference;
+        const response = await call(
+          '/payments/sepay/sandbox/simulate',
+          client,
+          { reference },
+          'booking-demo-click',
+        );
+        assert.equal(response.status, 200, JSON.stringify(response.body));
+        assert.equal(
+          (
+            await call(
+              '/payments/sepay/sandbox/simulate',
+              client,
+              { reference },
+              'booking-demo-click',
+            )
+          ).status,
+          200,
+        );
+        assert.equal((await detail(id)).workflow.depositPayment.status, 'paid');
+        assert.equal(await Transaction.countDocuments({ workflowBooking: id }), 1);
+      } finally {
+        process.env.NODE_ENV = previous;
+        delete process.env.SEPAY_DEMO_UI;
+      }
+    },
+  );
 });

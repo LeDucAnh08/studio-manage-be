@@ -8,6 +8,8 @@ import BookingWorkflow from '../models/BookingWorkflow';
 import { workflowPhotographers } from '../services/workflowPhotographer';
 import { expirePendingBookings } from '../services/bookingExpiry';
 import { protect } from '../middleware/auth';
+import deliveryRoutes from './bookingDelivery';
+import { albumRoutes } from './bookingAlbum';
 import { requireRole } from '../middleware/role';
 import { asyncHandler } from '../middleware/asyncHandler';
 import { sendResponse } from '../utils/response';
@@ -40,6 +42,8 @@ router.use(
     next();
   }),
 );
+router.use('/:id/delivery', deliveryRoutes);
+router.use('/:id/album', albumRoutes);
 const isAdmin = (roles: number[]) => roles.some((role) => role === 0 || role === 1);
 const bookingStatuses = ['pending', 'approved', 'rejected', 'cancelled'] as const;
 const bookingHandler = (work: (req: Request, res: Response) => Promise<void>) =>

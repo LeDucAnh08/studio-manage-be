@@ -26,6 +26,15 @@ import {
 import { workflowPhotographers } from '../services/workflowPhotographer';
 import { expirePendingBookings } from '../services/bookingExpiry';
 import { createDepositPayment, depositPaymentDto } from '../services/depositPayment';
+import { enqueueDepositEmail } from '../services/email';
+import DeliveryPhoto from '../models/BookingDeliveryPhoto';
+import { deliveryPhotoDto, validateDeliveryPhotos } from '../services/bookingDelivery';
+import AlbumPhoto from '../models/BookingAlbumPhoto';
+import {
+  driveDeliveryDto,
+  preflightDriveDelivery,
+  publishDriveDelivery,
+} from '../services/bookingAlbum';
 import {
   bookingOrderStage,
   bookingOrderStages,
@@ -138,6 +147,7 @@ const toDto = async (booking: any, workflow: IBookingWorkflow | null, actor: Act
         editingTerms: workflow.quote.editingTerms,
         terms: workflow.quote.terms,
         paymentInstructions: workflow.quote.paymentInstructions,
+        proposedAt: workflow.quote.proposedAt,
         acceptedAt: workflow.quote.acceptedAt,
       }
     : null;
@@ -222,12 +232,42 @@ const toDto = async (booking: any, workflow: IBookingWorkflow | null, actor: Act
         })),
       }))
     : [];
+  const photoIds = [
+    ...(workflow?.progress?.photos || []),
+    ...(workflow?.deliveryHistory || []).flatMap((entry: any) => entry.photos || []),
+  ];
+  const photos =
+    allowMemberRead && photoIds.length
+      ? await DeliveryPhoto.find({
+          _id: { $in: photoIds },
+          booking: booking._id,
+          deletedAt: { $exists: false },
+          'publishedVersions.0': { $exists: true },
+        }).lean()
+      : [];
+  const photoMap = new Map(photos.map((photo) => [String(photo._id), deliveryPhotoDto(photo)]));
+  const photoList = (ids: any[] = []) => ids.map((id) => photoMap.get(String(id))).filter(Boolean);
+  const driveIds = [
+    ...(workflow?.progress?.drivePhotos || []),
+    ...(workflow?.deliveryHistory || []).flatMap((entry: any) => entry.drivePhotos || []),
+  ];
+  const drivePhotos =
+    allowMemberRead && driveIds.length
+      ? await AlbumPhoto.find({ _id: { $in: driveIds } }).lean()
+      : [];
+  const driveMap = new Map(
+    drivePhotos.map((photo) => [String(photo._id), driveDeliveryDto(photo)]),
+  );
+  const driveList = (ids: any[] = []) => ids.map((id) => driveMap.get(String(id))).filter(Boolean);
   const progress = workflow
     ? {
         status: workflow.progress.status,
         deliveryVersion: workflow.progress.deliveryVersion,
         deliveryUrl:
           clientView || canManage || isAssigned ? workflow.progress.deliveryUrl : undefined,
+        photos: allowMemberRead
+          ? [...photoList(workflow.progress.photos), ...driveList(workflow.progress.drivePhotos)]
+          : [],
         deliveredAt: workflow.progress.deliveredAt,
         acceptedAt: workflow.progress.acceptedAt,
         acceptedDeliveryVersion: workflow.progress.acceptedDeliveryVersion,
@@ -255,6 +295,8 @@ const toDto = async (booking: any, workflow: IBookingWorkflow | null, actor: Act
     booking: {
       _id: String(booking._id),
       status: booking.status,
+      createdAt: booking.createdAt,
+      reviewedAt: booking.reviewedAt,
       cancelledAt: booking.cancelledAt,
       cancellationReason: booking.cancellationReason,
       packageName: booking.packageName,
@@ -302,10 +344,11 @@ const toDto = async (booking: any, workflow: IBookingWorkflow | null, actor: Act
       allowedCostumes,
       progress,
       deliveryHistory:
-        clientView || canManage
+        clientView || canManage || isAssigned
           ? (workflow?.deliveryHistory ?? []).map((item: any) => ({
               version: item.version,
               deliveryUrl: item.deliveryUrl,
+              photos: [...photoList(item.photos), ...driveList(item.drivePhotos)],
               deliveredAt: item.deliveredAt,
             }))
           : [],
@@ -1261,9 +1304,12 @@ export const recordWorkflowPayment = async (
     !cancellation &&
     workflow.resources.schedule &&
     settled(workflow) &&
-    workflow.progress.acceptedAt
-  )
+    workflow.progress.acceptedAt &&
+    workflow.lifecycle !== 'completed'
+  ) {
     workflow.lifecycle = 'completed';
+    logEvent(workflow, actor, 'workflow.completed', 'Đơn đã hoàn tất.');
+  }
   logEvent(workflow, actor, 'payment.record', `${kind} of ${amount} recorded.`, 'accounting');
   return paymentId;
 };
@@ -1278,6 +1324,8 @@ const runAction = async (
   if (typeof action !== 'string') throw new WorkflowProblem(400, 'Action is required');
   await expirePendingBookings();
   const actionFingerprint = hash({ ...body, expectedVersion: undefined });
+  if (action === 'progress.update' && body.status === 'delivered' && body.driveAlbum === true)
+    await preflightDriveDelivery(bookingId, actor, body.albumVersion, idempotencyKey);
   let memberToken: string | undefined;
   let changed = false;
   let bookingResult: any;
@@ -1309,7 +1357,7 @@ const runAction = async (
           'member-link.close',
         ].includes(action)) ||
       (action === 'payment.record' && isRole(actor, 5)) ||
-      (action === 'progress.update' &&
+      (['progress.update', 'delivery.revision.start'].includes(action) &&
         isRole(actor, 3) &&
         !!workflow?.resources.photographers.some((id: any) => String(id) === String(actor._id)));
     requireActor(canUseAction);
@@ -1433,6 +1481,7 @@ const runAction = async (
         const message = `Đã duyệt gói chụp. Giữ lịch tạm đến ${workflow.packageReservation.expiresAt.toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' })}; vui lòng đặt đủ cọc trong thời hạn.`;
         booking.events.push({ audience: 'client', message }, { audience: 'admin', message });
         await booking.save({ session });
+        await enqueueDepositEmail(booking, workflow, session);
         logEvent(workflow, actor, action, message, 'client');
         break;
       }
@@ -1679,14 +1728,43 @@ const runAction = async (
         }
         workflow.progress.status = nextStatus;
         if (nextStatus === 'delivered') {
-          const deliveryUrl = safeUrl(body.deliveryUrl);
-          if (!deliveryUrl) throw new WorkflowProblem(400, 'Delivery must be an http(s) URL');
-          workflow.progress.deliveryUrl = deliveryUrl;
+          if (
+            body.driveAlbum === true &&
+            (body.deliveryPhotoIds !== undefined || body.deliveryUrl !== undefined)
+          )
+            throw new WorkflowProblem(400, 'Chọn một nguồn ảnh bàn giao.');
+          const deliveryUrl = body.deliveryUrl ? safeUrl(body.deliveryUrl) : null;
+          const driveGallery =
+            body.driveAlbum === true
+              ? await publishDriveDelivery(
+                  booking._id,
+                  body.albumVersion,
+                  workflow.progress.deliveryVersion + 1,
+                  session,
+                )
+              : [];
+          const gallery =
+            body.deliveryPhotoIds !== undefined
+              ? await validateDeliveryPhotos(body.deliveryPhotoIds, booking._id, session)
+              : [];
+          if (!gallery.length && !deliveryUrl && !driveGallery.length)
+            throw new WorkflowProblem(400, 'Tải ảnh hậu kỳ trước khi gửi bản bàn giao.');
+          workflow.progress.deliveryUrl = deliveryUrl || undefined;
+          workflow.progress.photos = gallery.map((id: string) => new Types.ObjectId(id));
+          workflow.progress.drivePhotos = driveGallery;
           workflow.progress.deliveryVersion += 1;
           workflow.progress.deliveredAt = new Date();
+          if (gallery.length)
+            await DeliveryPhoto.updateMany(
+              { _id: { $in: gallery }, booking: booking._id, deletedAt: { $exists: false } },
+              { $addToSet: { publishedVersions: workflow.progress.deliveryVersion } },
+              { session },
+            );
           workflow.deliveryHistory.push({
             version: workflow.progress.deliveryVersion,
             deliveryUrl,
+            photos: workflow.progress.photos,
+            drivePhotos: driveGallery,
             deliveredAt: workflow.progress.deliveredAt,
             deliveredBy: actor._id,
           } as any);
@@ -1705,6 +1783,35 @@ const runAction = async (
             : `Updated progress to ${nextStatus}.`,
           'client',
         );
+        break;
+      }
+      case 'delivery.revision.start': {
+        requireActor(
+          isAdmin ||
+            (isRole(actor, 3) &&
+              workflow.resources.photographers.some((id: any) => String(id) === String(actor._id))),
+          'Chỉ ekip được bắt đầu chỉnh lại.',
+        );
+        const note = cleanText(body.note, 2000);
+        if (
+          !note ||
+          workflow.lifecycle !== 'delivered' ||
+          body.deliveryVersion !== workflow.progress.deliveryVersion
+        )
+          throw new WorkflowProblem(
+            409,
+            'Chỉ bắt đầu chỉnh lại bản bàn giao hiện tại đang chờ nghiệm thu.',
+          );
+        workflow.progress.revisionRequests.push({
+          note,
+          deliveryVersion: workflow.progress.deliveryVersion,
+          requestedBy: actor._id,
+          at: new Date(),
+        } as any);
+        workflow.progress.acceptedAt = undefined;
+        workflow.progress.acceptedDeliveryVersion = undefined;
+        workflow.lifecycle = 'revision_requested';
+        logEvent(workflow, actor, action, 'Ekip bắt đầu xử lý góp ý ảnh bàn giao.', 'client');
         break;
       }
       case 'revision.request': {
@@ -1746,6 +1853,8 @@ const runAction = async (
         workflow.progress.acceptedAt = new Date();
         workflow.progress.acceptedDeliveryVersion = workflow.progress.deliveryVersion;
         workflow.lifecycle = settled(workflow) ? 'completed' : 'accepted';
+        if (workflow.lifecycle === 'completed')
+          logEvent(workflow, actor, 'workflow.completed', 'Đơn đã hoàn tất.');
         logEvent(workflow, actor, action, 'Client accepted the current delivery.', 'admin');
         break;
       }

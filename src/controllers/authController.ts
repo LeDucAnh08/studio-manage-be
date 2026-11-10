@@ -5,11 +5,20 @@ import User from '../models/User';
 import { sendResponse } from '../utils/response';
 import AccountRequest from '../models/AccountRequest';
 import { isDuplicateKeyError, normalizeUsername, trimmedText } from '../utils/input';
+import { normalizeEmail } from '../services/email';
 
 export const registerClient = async (req: Request, res: Response): Promise<void> => {
   const { username, name, password } = req.body;
   const normalizedUsername = normalizeUsername(username);
   const normalizedName = trimmedText(name, 100);
+  const email =
+    req.body.email === undefined || req.body.email === ''
+      ? undefined
+      : normalizeEmail(req.body.email);
+  if (email === null) {
+    sendResponse(res, 400, false, 'Nhập địa chỉ email hợp lệ.');
+    return;
+  }
   if (
     !normalizedUsername ||
     !normalizedName ||
@@ -33,6 +42,7 @@ export const registerClient = async (req: Request, res: Response): Promise<void>
     await User.create({
       username: normalizedUsername,
       name: normalizedName,
+      email,
       password,
       roles: [6],
       isActive: true,
@@ -80,7 +90,14 @@ export const login = async (req: Request, res: Response): Promise<void> => {
   const token = signToken(user._id.toString());
   sendResponse(res, 200, true, 'Login successful', {
     token,
-    user: { _id: user._id, username: user.username, name: user.name, roles: user.roles },
+    user: {
+      _id: user._id,
+      username: user.username,
+      name: user.name,
+      roles: user.roles,
+      email: user.email,
+      emailVerifiedAt: user.emailVerifiedAt,
+    },
   });
 };
 

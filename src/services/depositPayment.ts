@@ -18,6 +18,14 @@ export interface DepositPaymentSnapshot {
 }
 
 export const sepayEnabled = () => process.env.SEPAY_ENABLED === 'true';
+export const sandboxUiEnabled = () =>
+  process.env.SEPAY_DEMO_UI === 'true' &&
+  process.env.NODE_ENV === 'development' &&
+  sepayEnabled() &&
+  process.env.SEPAY_MODE === 'sandbox' &&
+  !!process.env.SEPAY_SANDBOX_DATABASE?.startsWith('studio_sepay_') &&
+  mongoose.connection.name === process.env.SEPAY_SANDBOX_DATABASE &&
+  ['localhost', '127.0.0.1', '::1', '[::1]'].includes(mongoose.connection.host || '');
 export const normalizeBankGateway = (value: string) =>
   value.toUpperCase().replace(/[^A-Z0-9]/g, '');
 
@@ -144,6 +152,7 @@ export function depositPaymentDto(booking: any, workflow: any, now = new Date())
   const qrUrl = `https://vietqr.app/img?${params}`;
   return {
     provider: 'sepay' as const,
+    ...(sandboxUiEnabled() ? { demoSimulation: true } : {}),
     mode: payment.mode,
     reference: payment.reference,
     bankName: payment.bankName,

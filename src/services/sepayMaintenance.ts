@@ -3,6 +3,7 @@ import BookingWorkflow from '../models/BookingWorkflow';
 import User from '../models/User';
 import { createDepositPayment, sepayConfig } from './depositPayment';
 import { withResourceTransaction, WorkflowProblem } from './workflowTransactions';
+import { enqueueDepositEmail } from './email';
 
 export async function backfillDepositPayments({
   username,
@@ -54,6 +55,7 @@ export async function backfillDepositPayments({
         workflow.depositPayment = createDepositPayment(booking, workflow);
         workflow.version += 1;
         await workflow.save({ session });
+        if (session) await enqueueDepositEmail(booking, workflow, session);
       }
       result.push({ bookingId: String(booking._id), action: apply ? 'created' : 'would-create' });
     };
