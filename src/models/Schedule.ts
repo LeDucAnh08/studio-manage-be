@@ -18,6 +18,8 @@ export interface ISchedule extends Document {
   driveFolderUrl?: string;
   driveFolderId?: string;
   workflowBooking?: Types.ObjectId;
+  conceptOrder?: Types.ObjectId;
+  conceptTitle?: string;
   costumeReservations?: Array<{
     costume: Types.ObjectId;
     size: string;
@@ -29,7 +31,15 @@ export interface ISchedule extends Document {
 
 const scheduleSchema = new Schema<ISchedule>(
   {
-    customer: { type: Schema.Types.ObjectId, ref: 'Customer', required: true },
+    customer: {
+      type: Schema.Types.ObjectId,
+      ref: 'Customer',
+      required: function () {
+        return !(this as any).conceptOrder;
+      },
+    },
+    conceptOrder: { type: Schema.Types.ObjectId, ref: 'ConceptOrder' },
+    conceptTitle: String,
     package: { type: Schema.Types.ObjectId, ref: 'Package', default: null },
     costumes: [{ type: Schema.Types.ObjectId, ref: 'Costume', default: [] }],
     shootDate: { type: Date, required: true },
@@ -64,6 +74,10 @@ const scheduleSchema = new Schema<ISchedule>(
   { timestamps: true },
 );
 
+scheduleSchema.index(
+  { conceptOrder: 1 },
+  { unique: true, partialFilterExpression: { conceptOrder: { $type: 'objectId' } } },
+);
 scheduleSchema.index({ shootDate: 1 });
 scheduleSchema.index({ customer: 1 });
 scheduleSchema.index({ status: 1 });

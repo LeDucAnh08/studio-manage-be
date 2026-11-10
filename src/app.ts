@@ -25,6 +25,16 @@ import rentalRoutes from './routes/rentals';
 import reportRoutes from './routes/reports';
 import photographerRoutes from './routes/photographerAvailability';
 import paymentRoutes from './routes/payments';
+import conceptRoutes from './routes/concepts';
+import conceptOrderRoutes, { publicConceptAlbums } from './routes/conceptOrders';
+import { expireConceptOrders } from './services/conceptBooking';
+import { conceptEnabled } from './services/conceptPolicy';
+import Concept from './models/Concept';
+import ConceptPackage from './models/ConceptPackage';
+import PhotographerProfile from './models/PhotographerProfile';
+import ConceptOrder from './models/ConceptOrder';
+import ConceptAlbum from './models/ConceptAlbum';
+import ConceptPhoto from './models/ConceptPhoto';
 import { startBookingExpiry } from './services/bookingExpiry';
 import { packageMediaDirectory } from './services/packageMedia';
 import { emailConfig, startEmailWorker } from './services/email';
@@ -76,6 +86,9 @@ app.use('/api/account-requests', accountRequestRoutes);
 app.use('/api/workflows', workflowRoutes);
 app.use('/api/rentals', rentalRoutes);
 app.use('/api/bookings', bookingRoutes);
+app.use('/api/concepts', conceptRoutes);
+app.use('/api/concept-orders', conceptOrderRoutes);
+app.use('/api/public/concept-albums', publicConceptAlbums);
 app.use('/api/customers', customerRoutes);
 app.use('/api/schedules', scheduleRoutes);
 app.use('/api/transactions', transactionRoutes);
@@ -111,6 +124,32 @@ connectDB().then(async () => {
   await BookingAlbum.init();
   await BookingAlbumPhoto.init();
   await BookingAlbumSelection.init();
+  if (conceptEnabled()) {
+    for (const model of [
+      Concept,
+      ConceptPackage,
+      PhotographerProfile,
+      ConceptOrder,
+      ConceptAlbum,
+      ConceptPhoto,
+    ])
+      await model.init();
+    let expiring = false;
+    const tick = async () => {
+      if (expiring) return;
+      expiring = true;
+      try {
+        await expireConceptOrders();
+      } catch (e) {
+        console.error('[Concept expiry]', (e as Error).message);
+      } finally {
+        expiring = false;
+      }
+    };
+    void tick();
+    const timer = setInterval(() => void tick(), 60000);
+    timer.unref();
+  }
   startBookingExpiry();
   startEmailWorker();
   const host =

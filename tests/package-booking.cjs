@@ -181,6 +181,13 @@ test('package checkout, temporary crew holds, automatic confirmation, roster and
     'approval snapshots the accepted price, holds crew and blocks conflicting bookings/private blocks',
     async () => {
       first = await make('2099-11-01');
+      const blocked = await approve(first);
+      assert.equal(blocked.status, 409);
+      assert.equal(
+        blocked.body.message,
+        'Cần phân công ít nhất 1 thợ chụp trước khi duyệt giữ lịch. Hiện có 0 thợ; cần thêm 1 thợ.',
+      );
+      assert.equal((await Booking.findById(first).lean()).status, 'pending');
       await Package.updateOne({ _id: pkg._id }, { $set: { pricePerMember: 700000 } });
       await action(first, admin, {
         action: 'photographer.assign',

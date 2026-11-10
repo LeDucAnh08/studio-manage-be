@@ -301,7 +301,10 @@ export const getOne = async (req: Request, res: Response): Promise<void> => {
 };
 
 export const create = async (req: Request, res: Response): Promise<void> => {
-  if (Object.prototype.hasOwnProperty.call(req.body, 'workflowBooking')) {
+  if (
+    Object.prototype.hasOwnProperty.call(req.body, 'workflowBooking') ||
+    Object.prototype.hasOwnProperty.call(req.body, 'conceptOrder')
+  ) {
     sendResponse(
       res,
       400,
@@ -421,7 +424,10 @@ export const create = async (req: Request, res: Response): Promise<void> => {
 };
 
 export const update = async (req: Request, res: Response): Promise<void> => {
-  if (Object.prototype.hasOwnProperty.call(req.body, 'workflowBooking')) {
+  if (
+    Object.prototype.hasOwnProperty.call(req.body, 'workflowBooking') ||
+    Object.prototype.hasOwnProperty.call(req.body, 'conceptOrder')
+  ) {
     sendResponse(
       res,
       400,
@@ -456,7 +462,10 @@ export const update = async (req: Request, res: Response): Promise<void> => {
     const existing = await existingQuery;
     if (!existing) throw new WorkflowProblem(404, 'Not found');
     prevSchedule = existing.toObject();
-    if (existing.workflowBooking && resourceFields.some((field) => field in updateData)) {
+    if (
+      (existing.workflowBooking || existing.conceptOrder) &&
+      resourceFields.some((field) => field in updateData)
+    ) {
       throw new WorkflowProblem(
         409,
         'Workflow-linked schedules must be changed or cancelled through the booking workflow',
@@ -623,7 +632,7 @@ export const remove = async (req: Request, res: Response): Promise<void> => {
     sendResponse(res, 404, false, 'Not found');
     return;
   }
-  if (target.workflowBooking) {
+  if (target.workflowBooking || target.conceptOrder) {
     sendResponse(
       res,
       409,
@@ -637,7 +646,7 @@ export const remove = async (req: Request, res: Response): Promise<void> => {
       await withResourceTransaction(async (session) => {
         const current = await Schedule.findById(req.params.id).session(session);
         if (!current) throw new WorkflowProblem(404, 'Not found');
-        if (current.workflowBooking)
+        if (current.workflowBooking || current.conceptOrder)
           throw new WorkflowProblem(
             409,
             'Workflow-linked schedules cannot be deleted through the legacy route',
@@ -675,6 +684,10 @@ export const exportContract = async (req: Request, res: Response): Promise<void>
   }
 
   let contractQuote = null;
+  if (schedule.conceptOrder) {
+    sendResponse(res, 409, false, 'Quản lý lịch này qua hồ sơ concept.');
+    return;
+  }
   if (schedule.workflowBooking) {
     const version =
       req.query.quoteVersion === undefined ? undefined : Number(req.query.quoteVersion);

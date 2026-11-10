@@ -3,6 +3,8 @@ import { Types } from 'mongoose';
 import Booking from '../models/Booking';
 import BookingWorkflow from '../models/BookingWorkflow';
 import RentalOrder from '../models/RentalOrder';
+import ConceptOrder from '../models/ConceptOrder';
+import { paymentDto } from './conceptBooking';
 import SePayReceipt from '../models/SePayReceipt';
 import { depositPaymentDto, sandboxUiEnabled, sepayConfig } from './depositPayment';
 import { rentalPaymentDto } from './rentalCheckout';
@@ -17,7 +19,7 @@ export async function simulateSandboxDeposit(
   if (!sandboxUiEnabled()) throw new WorkflowProblem(404, 'Không có chức năng này.');
   if (
     typeof reference !== 'string' ||
-    !/^(?:RENT|YUME)[A-F0-9]{16}$/.test(reference) ||
+    !/^(?:RENT|YUME|CONC)[A-F0-9]{16}$/.test(reference) ||
     typeof key !== 'string' ||
     !/^[a-zA-Z0-9_-]{8,128}$/.test(key)
   )
@@ -26,7 +28,17 @@ export async function simulateSandboxDeposit(
   const staff = actor.roles.some((role) => [0, 1, 5].includes(role));
   let payment;
   let createdAt: Date | undefined;
-  if (reference.startsWith('RENT')) {
+  if (reference.startsWith('CONC')) {
+    const order = await ConceptOrder.findOne({
+      'paymentRequests.reference': reference,
+      ...(!staff ? { client: actor._id } : {}),
+    });
+    const request = order?.paymentRequests.find((p) => p.reference === reference);
+    if (request) {
+      payment = paymentDto(request);
+      createdAt = request.createdAt;
+    }
+  } else if (reference.startsWith('RENT')) {
     const order = await RentalOrder.findOne({
       'depositPayment.reference': reference,
       ...(!staff ? { client: actor._id } : {}),

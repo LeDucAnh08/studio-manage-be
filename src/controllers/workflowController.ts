@@ -1421,7 +1421,7 @@ const runAction = async (
         if (team.length < minimum)
           throw new WorkflowProblem(
             409,
-            `Cần phân công ít nhất ${minimum} thợ chụp trước khi duyệt giữ lịch.`,
+            `Cần phân công ít nhất ${minimum} thợ chụp trước khi duyệt giữ lịch. Hiện có ${team.length} thợ; cần thêm ${minimum - team.length} thợ.`,
           );
         await ensurePhotographersAvailable(
           team,

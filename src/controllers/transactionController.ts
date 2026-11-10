@@ -92,6 +92,8 @@ export const create = async (req: Request, res: Response): Promise<void> => {
   delete payload.workflowPayment;
   delete payload.rentalOrder;
   delete payload.rentalPayment;
+  delete payload.conceptOrder;
+  delete payload.conceptPayment;
   if (!payload.season) {
     payload.season = await resolveSeasonForDate(payload.date);
   }
@@ -118,9 +120,9 @@ export const create = async (req: Request, res: Response): Promise<void> => {
 
 export const update = async (req: Request, res: Response): Promise<void> => {
   const existing = await Transaction.findById(req.params.id)
-    .select('workflowPayment rentalPayment')
+    .select('workflowPayment rentalPayment conceptPayment')
     .lean();
-  if (existing?.workflowPayment || existing?.rentalPayment) {
+  if (existing?.workflowPayment || existing?.rentalPayment || existing?.conceptPayment) {
     sendResponse(
       res,
       409,
@@ -134,6 +136,8 @@ export const update = async (req: Request, res: Response): Promise<void> => {
   delete updateData.workflowPayment;
   delete updateData.rentalOrder;
   delete updateData.rentalPayment;
+  delete updateData.conceptOrder;
+  delete updateData.conceptPayment;
   if (!isPrivileged(req.user!.roles)) {
     delete updateData.createdBy;
   }
@@ -154,9 +158,9 @@ export const update = async (req: Request, res: Response): Promise<void> => {
 
 export const remove = async (req: Request, res: Response): Promise<void> => {
   const existing = await Transaction.findById(req.params.id)
-    .select('workflowPayment rentalPayment')
+    .select('workflowPayment rentalPayment conceptPayment')
     .lean();
-  if (existing?.workflowPayment || existing?.rentalPayment) {
+  if (existing?.workflowPayment || existing?.rentalPayment || existing?.conceptPayment) {
     sendResponse(
       res,
       409,

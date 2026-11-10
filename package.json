@@ -12,7 +12,7 @@
     "start": "node dist/app.js",
     "build": "tsc",
     "check": "tsc --noEmit && prettier --check \"src/**/*.{ts,json}\"",
-    "test": "node --test tests/client-bookings.cjs tests/account-requests.cjs tests/costume-catalog.cjs tests/rental-access.cjs tests/phase1-mongo-integration.cjs tests/booking-costumes.cjs tests/customer-order-views.cjs tests/photographer-assignment.cjs tests/booking-expiry.cjs tests/package-content.cjs tests/package-booking.cjs tests/sepay-deposits.cjs tests/email-notifications.cjs tests/booking-delivery.cjs tests/booking-album.cjs tests/rental-auto-checkout.cjs",
+    "test": "node --test tests/client-bookings.cjs tests/account-requests.cjs tests/costume-catalog.cjs tests/rental-access.cjs tests/phase1-mongo-integration.cjs tests/booking-costumes.cjs tests/customer-order-views.cjs tests/photographer-assignment.cjs tests/booking-expiry.cjs tests/package-content.cjs tests/package-booking.cjs tests/sepay-deposits.cjs tests/email-notifications.cjs tests/booking-delivery.cjs tests/booking-album.cjs tests/rental-auto-checkout.cjs tests/concept-booking.cjs",
     "test:contract": "node --test tests/client-bookings.cjs tests/account-requests.cjs tests/costume-catalog.cjs tests/rental-access.cjs tests/package-content.cjs",
     "test:integration": "node --test tests/phase1-mongo-integration.cjs tests/booking-costumes.cjs tests/customer-order-views.cjs tests/photographer-assignment.cjs tests/booking-expiry.cjs tests/sepay-deposits.cjs tests/email-notifications.cjs tests/booking-delivery.cjs tests/booking-album.cjs tests/rental-auto-checkout.cjs",
     "test:booking-costumes": "node --test tests/booking-costumes.cjs",
@@ -32,7 +32,8 @@
     "format": "prettier --write \"src/**/*.{ts,json}\"",
     "format:check": "prettier --check \"src/**/*.{ts,json}\"",
     "test:album": "node --test tests/booking-album.cjs",
-    "test:rental": "node --test tests/rental-auto-checkout.cjs tests/rental-access.cjs tests/costume-catalog.cjs"
+    "test:rental": "node --test tests/rental-auto-checkout.cjs tests/rental-access.cjs tests/costume-catalog.cjs",
+    "test:concept": "node --test tests/concept-booking.cjs"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
@@ -44,7 +45,8 @@
     "mongoose": "^8.4.1",
     "multer": "^2.5.0",
     "pdfkit": "^0.18.0",
-    "sharp": "^0.35.5"
+    "sharp": "^0.35.5",
+    "archiver": "5.3.2"
   },
   "devDependencies": {
     "@types/bcryptjs": "^2.4.6",

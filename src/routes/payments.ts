@@ -58,7 +58,13 @@ router.post(
         throw new WorkflowProblem(400, 'Cần mã đơn thuê và ghi chú đối soát hợp lệ.');
       await withResourceTransaction(async (session) => {
         const receipt = await SePayReceipt.findById(req.params.id).session(session);
-        if (!receipt || receipt.direction !== 'in' || receipt.hasConflict || receipt.booking)
+        if (
+          !receipt ||
+          receipt.direction !== 'in' ||
+          receipt.hasConflict ||
+          receipt.booking ||
+          receipt.conceptOrder
+        )
           throw new WorkflowProblem(409, 'Giao dịch không đủ điều kiện đối soát đơn thuê.');
         if (receipt.status === 'applied') {
           if (String(receipt.rentalOrder) !== rentalId)

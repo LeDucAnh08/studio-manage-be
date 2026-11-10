@@ -1,5 +1,6 @@
 import mongoose, { ClientSession } from 'mongoose';
 import { activeBookingHoldFilter } from './bookingCostumeHolds';
+import { activeConceptHoldFilter } from './conceptHolds';
 
 export class WorkflowProblem extends Error {
   status: number;
@@ -77,8 +78,11 @@ export const resourceTransactionsRequired = async (): Promise<boolean> =>
   workflowEnabled() ||
   (mongoose.connection.readyState === 1 &&
     (!!(await mongoose.connection
-      .collection('bookings')
-      .findOne(activeBookingHoldFilter(), { projection: { _id: 1 } })) ||
+      .collection('conceptorders')
+      .findOne(activeConceptHoldFilter(), { projection: { _id: 1 } })) ||
+      !!(await mongoose.connection
+        .collection('bookings')
+        .findOne(activeBookingHoldFilter(), { projection: { _id: 1 } })) ||
       !!(await mongoose.connection
         .collection('rentalorders')
         .findOne(

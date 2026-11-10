@@ -15,6 +15,8 @@ const schema = new Schema(
     transactionDate: { type: Date, required: true },
     booking: { type: Schema.Types.ObjectId, ref: 'Booking' },
     workflowPayment: Schema.Types.ObjectId,
+    conceptOrder: { type: Schema.Types.ObjectId, ref: 'ConceptOrder', index: true },
+    conceptPayment: Schema.Types.ObjectId,
     rentalOrder: { type: Schema.Types.ObjectId, ref: 'RentalOrder' },
     rentalPayment: Schema.Types.ObjectId,
     resolvedBy: { type: Schema.Types.ObjectId, ref: 'User' },

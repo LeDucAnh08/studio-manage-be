@@ -3,6 +3,7 @@ import mongoose, { ClientSession } from 'mongoose';
 import EmailOutbox from '../models/EmailOutbox';
 import User from '../models/User';
 import Booking from '../models/Booking';
+import ConceptOrder from '../models/ConceptOrder';
 import BookingWorkflow from '../models/BookingWorkflow';
 import { depositPaymentDto } from './depositPayment';
 
@@ -238,6 +239,14 @@ export async function processEmailOutbox(
           user.emailVerification.expiresAt <= new Date()
         ) {
           await skip('verification_superseded_or_expired');
+          continue;
+        }
+      } else if (job.kind === 'concept_update') {
+        if (
+          !user.emailVerifiedAt ||
+          !(await ConceptOrder.exists({ _id: job.conceptOrder, client: user._id }))
+        ) {
+          await skip('concept_recipient_invalid');
           continue;
         }
       } else {

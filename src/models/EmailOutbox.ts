@@ -3,9 +3,14 @@ import mongoose, { Schema } from 'mongoose';
 const emailOutboxSchema = new Schema(
   {
     dedupeKey: { type: String, required: true, unique: true },
-    kind: { type: String, enum: ['verify_email', 'deposit_approved'], required: true },
+    kind: {
+      type: String,
+      enum: ['verify_email', 'deposit_approved', 'concept_update'],
+      required: true,
+    },
     user: { type: Schema.Types.ObjectId, ref: 'User', required: true },
     booking: { type: Schema.Types.ObjectId, ref: 'Booking' },
+    conceptOrder: { type: Schema.Types.ObjectId, ref: 'ConceptOrder' },
     paymentReference: String,
     to: { type: String, required: true },
     mode: { type: String, enum: ['test', 'resend'], required: true },

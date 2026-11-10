@@ -1,5 +1,6 @@
 import type { ClientSession } from 'mongoose';
 import Booking from '../models/Booking';
+import { conceptCostumeHolds } from './conceptHolds';
 
 export const activeBookingHoldFilter = (now = new Date()) => ({
   status: { $in: ['pending', 'approved'] },
@@ -24,15 +25,18 @@ export const loadBookingCostumeHolds = async (
   }).select('costumeSelections costumeHold');
   if (session) query.session(session);
   const bookings = await query.lean();
-  return bookings.map((booking) => ({
-    bookingId: String(booking._id),
-    status: 'confirmed',
-    quote: {
-      lines: booking.costumeSelections,
-      receiveDate: booking.costumeHold!.receiveDate,
-      returnDate: booking.costumeHold!.returnDate,
-    },
-  }));
+  return [
+    ...(await conceptCostumeHolds(costumeIds, session)),
+    ...bookings.map((booking) => ({
+      bookingId: String(booking._id),
+      status: 'confirmed',
+      quote: {
+        lines: booking.costumeSelections,
+        receiveDate: booking.costumeHold!.receiveDate,
+        returnDate: booking.costumeHold!.returnDate,
+      },
+    })),
+  ];
 };
 
 export const bookingCostumeDto = (booking: any, now = new Date()) => ({

@@ -1,6 +1,8 @@
 import { ClientSession, Types, isValidObjectId } from 'mongoose';
 import Schedule from '../models/Schedule';
 import User from '../models/User';
+import ConceptOrder from '../models/ConceptOrder';
+import { activeConceptHoldFilter } from './conceptHolds';
 import PhotographerUnavailability from '../models/PhotographerUnavailability';
 import BookingWorkflow from '../models/BookingWorkflow';
 import { WorkflowProblem } from './workflowTransactions';
@@ -68,6 +70,7 @@ export const photographerAvailability = async (
     photographerIds?: string[];
     excludeSchedule?: Types.ObjectId;
     excludeBooking?: Types.ObjectId;
+    excludeConcept?: string;
     session?: ClientSession;
   } = {},
 ): Promise<PhotographerAvailability[]> => {
@@ -84,7 +87,15 @@ export const photographerAvailability = async (
   const firstDay = vietnamDay(new Date(interval.start));
   const lastDay = vietnamDay(new Date(interval.end - 1));
   const schedules = await Schedule.find({
-    status: { $in: ['pending', 'confirmed'] },
+    status: { $in: ['pending', 'confirmed', 'completed'] },
+    $and: [
+      {
+        $or: [
+          { status: { $in: ['pending', 'confirmed'] } },
+          { conceptOrder: { $type: 'objectId' } },
+        ],
+      },
+    ],
     // Include adjacent days for the 60-minute buffer, and both legacy date encodings.
     shootDate: { $gte: new Date(firstDay - DAY), $lt: new Date(lastDay + 2 * DAY) },
     $or: [{ leadPhotographer: { $in: ids } }, { supportPhotographers: { $in: ids } }],
@@ -108,6 +119,14 @@ export const photographerAvailability = async (
     ...(excludeBooking ? { booking: { $ne: excludeBooking } } : {}),
   })
     .select('quote.proposedSchedule packageReservation.photographers')
+    .session(session ?? null)
+    .lean();
+  const conceptHolds = await ConceptOrder.find({
+    ...activeConceptHoldFilter(),
+    photographer: { $in: ids },
+    ...(options.excludeConcept ? { _id: { $ne: options.excludeConcept } } : {}),
+  })
+    .select('photographer startAt endAt')
     .session(session ?? null)
     .lean();
   return users
@@ -159,6 +178,18 @@ export const photographerAvailability = async (
         });
       if (blocks.some((row) => String(row.photographer) === String(user._id)))
         conflicts.push('Có lịch bận riêng trong khoảng thời gian này.');
+      if (
+        conceptHolds.some(
+          (hold) =>
+            String(hold.photographer) === String(user._id) &&
+            intervalsConflict(
+              interval,
+              { start: +hold.startAt, end: +hold.endAt },
+              PHOTOGRAPHER_BUFFER_MS,
+            ),
+        )
+      )
+        conflicts.push('Đang giữ lịch chụp concept chờ cọc.');
       for (const hold of holds) {
         const held = hold.packageReservation?.photographers.some(
           (id: Types.ObjectId) => String(id) === String(user._id),
