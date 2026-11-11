@@ -25,7 +25,7 @@ import {
   digest,
   integer,
   objectId,
-  safeUrl,
+  conceptImageUrl,
   text,
 } from '../services/conceptPolicy';
 import { getRentalAvailability, loadRentalHolds } from '../services/rentalAvailability';
@@ -48,8 +48,50 @@ export const conceptHandler = (fn: (req: any, res: any) => Promise<void>) =>
     }
   });
 const router = Router();
+const profileTextLimits = {
+  title: 120,
+  tagline: 180,
+  story: 4000,
+  specialty: 300,
+  style: 600,
+  guidance: 600,
+  philosophy: 1500,
+};
 router.use(conceptGate);
 router.use(createRateLimit({ limit: 120, windowMs: 60000, message: 'Thử lại sau một phút.' }));
+router.get(
+  '/photographers/:id',
+  conceptHandler(async (req, res) => {
+    const id = objectId(req.params.id);
+    const profile = await Profile.findOne({ photographer: id, published: true }).lean();
+    const photographer = await User.findOne({ _id: id, roles: 3, isActive: true })
+      .select('_id name')
+      .lean();
+    if (!profile || !photographer) throw new WorkflowProblem(404, 'Hồ sơ thợ chưa được công khai.');
+    const concepts = await Concept.find({ _id: { $in: profile.concepts }, active: true })
+      .select('_id name')
+      .lean();
+    if (!concepts.length) throw new WorkflowProblem(404, 'Hồ sơ thợ chưa được công khai.');
+    const activeIds = new Set(concepts.map((c) => String(c._id)));
+    sendResponse(res, 200, true, 'OK', {
+      _id: String(photographer._id),
+      name: photographer.name,
+      bio: profile.bio,
+      portraitUrl: profile.portraitUrl,
+      coverUrl: profile.coverUrl,
+      ...Object.fromEntries(
+        Object.keys(profileTextLimits).map((field) => [field, (profile as any)[field] || '']),
+      ),
+      approach: profile.approach,
+      audience: profile.audience,
+      milestones: profile.milestones,
+      concepts,
+      portfolio: profile.portfolio
+        .filter((p) => p.permitted && activeIds.has(String(p.concept)))
+        .map((p) => ({ concept: String(p.concept), url: p.url, caption: p.caption })),
+    });
+  }),
+);
 router.get(
   '/',
   conceptHandler(async (_req, res) => {
@@ -195,9 +237,26 @@ router.post(
         data = {
           name: text(b.name, 120),
           description: text(b.description, 4000, false),
-          coverUrl: b.coverUrl ? safeUrl(b.coverUrl) : '',
+          coverUrl: b.coverUrl ? conceptImageUrl(b.coverUrl) : '',
           active: b.active === true,
         };
+        for (const [field, max] of Object.entries({
+          story: 6000,
+          styleSummary: 300,
+          audience: 1000,
+          setting: 1000,
+          wardrobeGuidance: 1000,
+          preparation: 2000,
+        }))
+          if (b[field] !== undefined) data[field] = text(b[field], max, false);
+        if (b.gallery !== undefined) {
+          if (!Array.isArray(b.gallery) || b.gallery.length > 24)
+            throw new WorkflowProblem(400, 'Bộ ảnh tham khảo tối đa 24 ảnh.');
+          data.gallery = b.gallery.map((image: any) => ({
+            url: conceptImageUrl(image?.url),
+            caption: text(image?.caption, 200, false),
+          }));
+        }
       } else if (kind === 'package') {
         model = Package;
         const concept = objectId(b.concept);
@@ -223,6 +282,54 @@ router.post(
           costumeTypes,
           active: b.active === true,
         };
+        if (b.imageUrl !== undefined) data.imageUrl = b.imageUrl ? conceptImageUrl(b.imageUrl) : '';
+        if (b.introduction !== undefined) data.introduction = text(b.introduction, 1000, false);
+        if (b.studioSupport !== undefined) {
+          if (!Array.isArray(b.studioSupport) || b.studioSupport.length > 4)
+            throw new WorkflowProblem(400, 'Tối đa bốn nội dung studio đồng hành.');
+          data.studioSupport = b.studioSupport.map((item: any) => ({
+            title: text(item?.title, 120),
+            description: text(item?.description, 500),
+          }));
+        }
+        if (b.delivery !== undefined) {
+          if (!b.delivery || typeof b.delivery !== 'object' || Array.isArray(b.delivery))
+            throw new WorkflowProblem(400, 'Thông tin giao ảnh không hợp lệ.');
+          data.delivery = Object.fromEntries(
+            ['timeline', 'format', 'originals'].map((field) => [
+              field,
+              text(b.delivery[field], 1000, false),
+            ]),
+          );
+        }
+        if (b.showcase !== undefined) {
+          if (
+            !b.showcase ||
+            typeof b.showcase !== 'object' ||
+            Array.isArray(b.showcase) ||
+            !Array.isArray(b.showcase.images) ||
+            b.showcase.images.length > 6
+          )
+            throw new WorkflowProblem(400, 'Bộ ảnh giới thiệu tối đa sáu ảnh.');
+          data.showcase = {
+            title: text(b.showcase.title, 120, false),
+            description: text(b.showcase.description, 1000, false),
+            images: b.showcase.images.map((image: any) => ({
+              url: conceptImageUrl(image?.url),
+              caption: text(image?.caption, 200, false),
+            })),
+          };
+        }
+        if (b.decor !== undefined) {
+          if (!b.decor || typeof b.decor !== 'object' || Array.isArray(b.decor))
+            throw new WorkflowProblem(400, 'Thông tin decor không hợp lệ.');
+          data.decor = Object.fromEntries(
+            ['backdrop', 'props', 'layout', 'included'].map((field) => [
+              field,
+              text(b.decor[field], 1000, false),
+            ]),
+          );
+        }
       } else if (kind === 'profile') {
         model = Profile;
         const photographer = objectId(b.photographer);
@@ -254,12 +361,25 @@ router.post(
               );
             return {
               concept: p.concept,
-              url: safeUrl(p.url),
+              url: conceptImageUrl(p.url),
               caption: text(p.caption, 200, false),
               permitted: true,
             };
           }),
         };
+        for (const [field, max] of Object.entries(profileTextLimits))
+          if (b[field] !== undefined) data[field] = text(b[field], max, false);
+        for (const field of ['portraitUrl', 'coverUrl'])
+          if (b[field] !== undefined) data[field] = b[field] ? conceptImageUrl(b[field]) : '';
+        for (const [field, max] of Object.entries({ approach: 4, audience: 4, milestones: 6 })) {
+          if (b[field] === undefined) continue;
+          if (!Array.isArray(b[field]) || b[field].length > max)
+            throw new WorkflowProblem(400, 'Nội dung hồ sơ không hợp lệ.');
+          data[field] = b[field].map((item: any) => ({
+            title: text(item?.title, 120),
+            description: text(item?.description, 600, false),
+          }));
+        }
       } else throw new WorkflowProblem(404, 'Không có danh mục này.');
       if (b.id) {
         const old = await model.findById(objectId(b.id)).session(session);

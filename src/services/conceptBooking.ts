@@ -136,6 +136,10 @@ export async function availablePhotographers(
     .map((r) => ({
       _id: r._id,
       name: r.name,
+      title: profiles.find((p) => String(p.photographer) === r._id)!.title,
+      tagline: profiles.find((p) => String(p.photographer) === r._id)!.tagline,
+      portraitUrl: profiles.find((p) => String(p.photographer) === r._id)!.portraitUrl,
+      coverUrl: profiles.find((p) => String(p.photographer) === r._id)!.coverUrl,
       bio: profiles.find((p) => String(p.photographer) === r._id)!.bio,
       portfolio: profiles
         .find((p) => String(p.photographer) === r._id)!
@@ -270,6 +274,7 @@ export function orderDto(order: any, actor: any) {
       conceptName: order.snapshot.conceptName,
       durationMinutes: order.snapshot.durationMinutes,
       retouchQuota: order.snapshot.retouchQuota,
+      decor: order.snapshot.decor,
     };
   }
   if (order.status === 'awaiting_deposit' && +order.reservation.expiresAt <= Date.now())
@@ -436,10 +441,44 @@ export async function checkout(actor: any, body: any, key: string) {
       freeFeedbackRounds: 2,
       acceptedAt: new Date(),
     };
-    if (!Array.isArray(body.costumes) || body.costumes.length > 100)
+    const people = integer(body.people, 1, pkg.maxPeople);
+    const measurementsMode = body.wardrobeMeasurements !== undefined;
+    const costumeInput = measurementsMode && body.costumes === undefined ? [] : body.costumes;
+    if (!Array.isArray(costumeInput) || costumeInput.length > 100)
       throw new WorkflowProblem(400, 'Danh sách trang phục không hợp lệ.');
+    let wardrobeMeasurements: { size: string; heightCm: number; weightKg: number }[] = [];
+    if (measurementsMode) {
+      const rows = body.wardrobeMeasurements;
+      if (
+        !Array.isArray(rows) ||
+        rows.length > 100 ||
+        (pkg.costumeCount > 0
+          ? rows.length !== people
+          : rows.length !== 0 && rows.length !== people) ||
+        costumeInput.length > 0
+      )
+        throw new WorkflowProblem(
+          400,
+          'Điền size, chiều cao và cân nặng cho từng người để studio chuẩn bị trang phục.',
+        );
+      wardrobeMeasurements = rows.map((row: any) => {
+        const size = text(row?.size, 12);
+        if (
+          typeof row?.heightCm !== 'number' ||
+          !Number.isFinite(row.heightCm) ||
+          row.heightCm < 30 ||
+          row.heightCm > 250 ||
+          typeof row?.weightKg !== 'number' ||
+          !Number.isFinite(row.weightKg) ||
+          row.weightKg < 1 ||
+          row.weightKg > 350
+        )
+          throw new WorkflowProblem(400, 'Chiều cao hoặc cân nặng không hợp lệ.');
+        return { size, heightCm: row.heightCm, weightKg: row.weightKg };
+      });
+    }
     const seen = new Set<string>();
-    const costumes = body.costumes.map((row: any) => {
+    const costumes = costumeInput.map((row: any) => {
       const costumeId = objectId(row.costumeId),
         size = text(row.size, 12),
         quantity = integer(row.quantity, 1, 100);
@@ -459,7 +498,7 @@ export async function checkout(actor: any, body: any, key: string) {
       snapshot,
       contactName: text(body.contactName, 100),
       phone,
-      people: integer(body.people, 1, pkg.maxPeople),
+      people,
       brief: text(body.brief, 4000, false),
       references: body.references.map(safeUrl),
       photographer: objectId(body.photographerId),
@@ -467,6 +506,7 @@ export async function checkout(actor: any, body: any, key: string) {
       endAt: end,
       originalStartAt: start,
       costumes,
+      wardrobeMeasurements,
       checkoutKey: key,
       fingerprint,
       reservation: { status: 'held', expiresAt: new Date(Date.now() + HOLD_MS) },

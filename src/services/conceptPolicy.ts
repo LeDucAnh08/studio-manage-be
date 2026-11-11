@@ -33,6 +33,11 @@ export function safeUrl(value: unknown) {
     throw new WorkflowProblem(400, 'Dùng đường dẫn HTTPS hợp lệ.');
   }
 }
+export function conceptImageUrl(value: unknown) {
+  if (typeof value === 'string' && /^\/images\/concepts\/[a-z0-9][a-z0-9-]*\.webp$/.test(value))
+    return value;
+  return safeUrl(value);
+}
 export function commandKey(value: unknown) {
   if (typeof value !== 'string' || !/^[\w.:-]{8,128}$/.test(value))
     throw new WorkflowProblem(400, 'Thiếu Idempotency-Key hợp lệ.');

@@ -51,7 +51,7 @@ const ensureCostumeChangePreservesReservations = async (
   )
     throw new WorkflowProblem(
       409,
-      'Trang phục đang được yêu cầu đặt dịch vụ giữ; không thể đổi loại.',
+      'Trang phục đang được yêu cầu chụp kỉ yếu giữ; không thể đổi loại.',
     );
   if (inventoryChanged) await ensureRentalStockPreserved(id, value.inventory, session);
   const schedules = (await Schedule.find({

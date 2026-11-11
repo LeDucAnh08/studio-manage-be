@@ -357,7 +357,7 @@ router.post(
         {
           audience: 'client',
           message:
-            'Đã nhận yêu cầu đặt dịch vụ. Studio sẽ kiểm tra và phản hồi; thời gian này chưa được giữ chỗ.',
+            'Đã nhận yêu cầu chụp kỉ yếu. Studio sẽ kiểm tra và phản hồi; thời gian này chưa được giữ chỗ.',
         },
         {
           audience: 'admin',

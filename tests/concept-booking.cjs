@@ -132,6 +132,12 @@ test('concept HTTP, shared resources, SePay, operations and Drive album', async 
   const pkg = await Package.create({
     concept: concept._id,
     name: 'Gói riêng',
+    decor: {
+      backdrop: 'Phông kem',
+      props: 'Ghế gỗ',
+      layout: 'Góc cửa sổ',
+      included: 'Một set decor studio',
+    },
     price: 1000000,
     durationMinutes: 60,
     maxPeople: 2,
@@ -315,6 +321,63 @@ test('concept HTTP, shared resources, SePay, operations and Drive album', async 
     );
   };
   let first;
+  await t.test(
+    'concept detail content is public, validated and preserved on legacy edits',
+    async () => {
+      const input = {
+        id: String(concept._id),
+        name: concept.name,
+        description: 'Concept test',
+        coverUrl: '/images/concepts/portrait-01.webp',
+        active: true,
+        story: 'Câu chuyện và phong cách.',
+        styleSummary: 'Ánh sáng mềm',
+        audience: 'Chân dung cá nhân',
+        setting: 'Studio',
+        wardrobeGuidance: 'Tông màu trung tính',
+        preparation: 'Chuẩn bị trang phục.',
+        gallery: [{ url: '/images/concepts/portrait-02.webp', caption: 'Ánh sáng cửa sổ' }],
+      };
+      assert.equal((await request('POST', '/concepts/concept', 'client', input)).status, 403);
+      assert.equal((await request('POST', '/concepts/concept', 'admin', input)).status, 200);
+      let publicCatalog = (await request('GET', '/concepts', null)).body.data;
+      let saved = publicCatalog.concepts.find((item) => String(item._id) === String(concept._id));
+      assert.equal(saved.story, input.story);
+      assert.equal(saved.gallery[0].url, input.gallery[0].url);
+      const legacy = {
+        id: input.id,
+        name: input.name,
+        description: input.description,
+        coverUrl: input.coverUrl,
+        active: true,
+      };
+      assert.equal((await request('POST', '/concepts/concept', 'admin', legacy)).status, 200);
+      for (const url of [
+        '/images/concepts/../secret.webp',
+        'javascript:alert(1)',
+        'http://example.com/photo.jpg',
+      ])
+        assert.equal(
+          (await request('POST', '/concepts/concept', 'admin', { ...input, gallery: [{ url }] }))
+            .status,
+          400,
+        );
+      assert.equal(
+        (
+          await request('POST', '/concepts/concept', 'admin', {
+            ...input,
+            gallery: Array.from({ length: 25 }, () => input.gallery[0]),
+          })
+        ).status,
+        400,
+      );
+      publicCatalog = (await request('GET', '/concepts', null)).body.data;
+      saved = publicCatalog.concepts.find((item) => String(item._id) === input.id);
+      assert.equal(saved.story, input.story);
+      assert.equal(saved.gallery.length, 1);
+    },
+  );
+
   await t.test('catalog management, public profiles, verified email and empty days', async () => {
     assert.equal((await request('GET', '/concepts', '')).status, 200);
     assert.equal((await request('GET', '/concepts/manage', 'client')).status, 403);
@@ -369,11 +432,306 @@ test('concept HTTP, shared resources, SePay, operations and Drive album', async 
       400,
     );
   });
+  await t.test(
+    'personal photographer profiles are validated, public-only and legacy compatible',
+    async () => {
+      const doc = await Profile.findOne({ photographer: actors.photo._id });
+      const baseProfile = {
+        id: String(doc._id),
+        photographer: String(actors.photo._id),
+        concepts: [String(concept._id)],
+        bio: 'Giới thiệu ngắn',
+        published: true,
+        portfolio: [
+          {
+            concept: String(concept._id),
+            url: '/images/concepts/portrait-01.webp',
+            caption: 'Ánh sáng mềm',
+            permitted: true,
+          },
+        ],
+      };
+      const content = {
+        portraitUrl: '/images/concepts/photographer-minh-duc.webp',
+        coverUrl: '/images/concepts/portrait-01.webp',
+        title: 'Chân dung và áo dài',
+        tagline: 'Giữ nét riêng.',
+        story: 'Tôi thích ánh sáng tự nhiên.',
+        specialty: 'Chân dung',
+        style: 'Tông ấm',
+        guidance: 'Nhẹ nhàng',
+        philosophy: 'Biểu cảm riêng của bạn.',
+        approach: [{ title: 'Làm quen', description: 'Trao đổi trước khi chụp.' }],
+        audience: [{ title: 'Lần đầu chụp', description: 'Được hướng dẫn cụ thể.' }],
+        milestones: [],
+      };
+      assert.equal(
+        (await request('POST', '/concepts/profile', 'photo', { ...baseProfile, ...content }))
+          .status,
+        403,
+      );
+      assert.equal(
+        (await request('POST', '/concepts/profile', 'admin', { ...baseProfile, ...content }))
+          .status,
+        200,
+      );
+      const url = `/concepts/photographers/${actors.photo._id}`;
+      let result = await request('GET', url, '');
+      assert.equal(result.status, 200);
+      for (const [field, value] of Object.entries(content))
+        assert.deepEqual(result.body.data[field], value);
+      assert.equal(result.body.data.portfolio.length, 1);
+      for (const privateField of ['email', 'phone', 'password', 'roles', 'published', 'createdAt'])
+        assert.equal(privateField in result.body.data, false);
+      assert.equal((await request('POST', '/concepts/profile', 'admin', baseProfile)).status, 200);
+      result = await request('GET', url, '');
+      for (const [field, value] of Object.entries(content))
+        assert.deepEqual(result.body.data[field], value);
+      for (const invalid of [
+        { title: 'x'.repeat(121) },
+        { story: 'x'.repeat(4001) },
+        { portraitUrl: 'javascript:alert(1)' },
+        { coverUrl: '/images/concepts/../private.webp' },
+        { approach: Array(5).fill(content.approach[0]) },
+        { audience: null },
+        { milestones: [{ title: '', description: 'Missing title' }] },
+        { portfolio: [{ ...baseProfile.portfolio[0], permitted: false }] },
+      ])
+        assert.equal(
+          (await request('POST', '/concepts/profile', 'admin', { ...baseProfile, ...invalid }))
+            .status,
+          400,
+        );
+      const hidden = await Concept.create({ name: 'Không công khai', active: false });
+      await Profile.updateOne(
+        { _id: doc._id },
+        {
+          $addToSet: { concepts: hidden._id },
+          $push: {
+            portfolio: {
+              $each: [
+                { concept: concept._id, url: 'https://example.com/private.jpg', permitted: false },
+                { concept: hidden._id, url: 'https://example.com/hidden.jpg', permitted: true },
+              ],
+            },
+          },
+        },
+      );
+      result = await request('GET', url, '');
+      assert.equal(result.body.data.portfolio.length, 1);
+      assert.equal(result.body.data.concepts.length, 1);
+      await Profile.updateOne({ _id: doc._id }, { $set: { published: false } });
+      assert.equal((await request('GET', url, '')).status, 404);
+      await Profile.updateOne({ _id: doc._id }, { $set: { published: true } });
+      await User.updateOne({ _id: actors.photo._id }, { $set: { isActive: false } });
+      assert.equal((await request('GET', url, '')).status, 404);
+      await User.updateOne({ _id: actors.photo._id }, { $set: { isActive: true } });
+      assert.equal((await request('GET', '/concepts/photographers/invalid-id', '')).status, 400);
+      assert.equal(
+        (await request('GET', `/concepts/photographers/${actors.client._id}`, '')).status,
+        404,
+      );
+    },
+  );
+  await t.test('package presentation validates, persists and survives legacy edits', async () => {
+    const decor = {
+      backdrop: 'Phông pastel',
+      props: 'Hoa và ghế gỗ',
+      layout: 'Góc ngồi và đứng',
+      included: 'Một set decor',
+    };
+    const input = {
+      concept: String(concept._id),
+      name: 'Gói bối cảnh',
+      price: 900000,
+      durationMinutes: 60,
+      maxPeople: 1,
+      retouchQuota: 10,
+      extraPhotoPrice: 70000,
+      costumeTypes: [],
+      costumeCount: 0,
+      active: true,
+      decor,
+      introduction: 'Một bộ ảnh mang nét riêng của bạn.',
+      studioSupport: [
+        { title: 'Hướng dẫn tạo dáng', description: 'Ekip hỗ trợ trong suốt buổi chụp.' },
+      ],
+      delivery: {
+        timeline: 'Bảy ngày sau khi chốt ảnh.',
+        format: 'JPEG qua album riêng.',
+        originals: 'Theo thỏa thuận.',
+      },
+      showcase: {
+        title: 'Trước và sau hậu kỳ',
+        description: 'Cùng một khung hình.',
+        images: [
+          { url: '/images/concepts/portrait-01.webp', caption: 'Trước hậu kỳ' },
+          { url: 'https://example.com/after.jpg', caption: 'Sau hậu kỳ' },
+        ],
+      },
+    };
+    assert.equal((await request('POST', '/concepts/package', 'client', input)).status, 403);
+    assert.equal((await request('POST', '/concepts/package', 'admin', input)).status, 200);
+    let saved = await Package.findOne({ name: input.name }).lean();
+    const catalog = (await request('GET', '/concepts', null)).body.data;
+    assert.deepEqual(
+      catalog.packages.find((row) => String(row._id) === String(saved._id)).decor,
+      decor,
+    );
+    const publicPackage = catalog.packages.find((row) => String(row._id) === String(saved._id));
+    for (const field of ['introduction', 'studioSupport', 'delivery', 'showcase'])
+      assert.deepEqual(publicPackage[field], input[field]);
+    const legacy = {
+      ...input,
+      id: String(saved._id),
+      expectedVersion: saved.version,
+      active: false,
+    };
+    delete legacy.decor;
+    for (const field of ['introduction', 'studioSupport', 'delivery', 'showcase'])
+      delete legacy[field];
+    assert.equal((await request('POST', '/concepts/package', 'admin', legacy)).status, 200);
+    saved = await Package.findById(saved._id).lean();
+    assert.deepEqual(saved.decor, decor);
+    for (const field of ['introduction', 'studioSupport', 'delivery', 'showcase'])
+      assert.deepEqual(saved[field], input[field]);
+    for (const invalid of [null, [], { backdrop: 'x'.repeat(1001) }])
+      assert.equal(
+        (
+          await request('POST', '/concepts/package', 'admin', {
+            ...legacy,
+            expectedVersion: saved.version,
+            decor: invalid,
+          })
+        ).status,
+        400,
+      );
+    assert.deepEqual((await Package.findById(saved._id).lean()).decor, decor);
+    for (const invalid of [
+      { introduction: 'x'.repeat(1001) },
+      { studioSupport: Array(5).fill(input.studioSupport[0]) },
+      { studioSupport: [{ title: '', description: 'Thiếu tiêu đề' }] },
+      { delivery: null },
+      { delivery: [] },
+      { delivery: { format: 'x'.repeat(1001) } },
+      { showcase: null },
+      { showcase: { images: Array(7).fill(input.showcase.images[0]) } },
+      { showcase: { images: [{ url: 'javascript:alert(1)' }] } },
+      { showcase: { images: [{ url: '/images/concepts/../private.webp' }] } },
+    ])
+      assert.equal(
+        (
+          await request('POST', '/concepts/package', 'admin', {
+            ...legacy,
+            expectedVersion: saved.version,
+            ...invalid,
+          })
+        ).status,
+        400,
+      );
+    const unchanged = await Package.findById(saved._id).lean();
+    assert.equal(unchanged.version, saved.version);
+    for (const field of ['introduction', 'studioSupport', 'delivery', 'showcase'])
+      assert.deepEqual(unchanged[field], input[field]);
+  });
+
+  await t.test(
+    'included wardrobe accepts measurements, validates each person and preserves legacy inventory',
+    async () => {
+      actors.measurements = await User.create({
+        username: 'concept.measurements',
+        name: 'Khách số đo',
+        password: 'TestOnly123!',
+        roles: [6],
+        email: 'measurements@example.com',
+        emailVerifiedAt: new Date(),
+        isActive: true,
+      });
+      const input = {
+        ...body(future(40), 'photo', false),
+        wardrobeMeasurements: [{ size: 'M', heightCm: 165.5, weightKg: 55.2 }],
+      };
+      delete input.costumes;
+      for (const invalid of [
+        null,
+        [],
+        [{ size: '', heightCm: 165, weightKg: 55 }],
+        [{ size: 'M', heightCm: '165', weightKg: 55 }],
+        [{ size: 'M', heightCm: 0, weightKg: 55 }],
+        [{ size: 'M', heightCm: 251, weightKg: 55 }],
+        [{ size: 'M', heightCm: 165, weightKg: -1 }],
+        [null],
+        [...input.wardrobeMeasurements, ...input.wardrobeMeasurements],
+      ])
+        assert.equal(
+          (
+            await request('POST', '/concept-orders', 'measurements', {
+              ...input,
+              wardrobeMeasurements: invalid,
+            })
+          ).status,
+          400,
+        );
+      assert.equal(
+        (
+          await request('POST', '/concept-orders', 'measurements', {
+            ...input,
+            costumes: body().costumes,
+          })
+        ).status,
+        400,
+      );
+      const key = randomUUID();
+      const created = await request('POST', '/concept-orders', 'measurements', input, key);
+      assert.equal(created.status, 201, JSON.stringify(created.body));
+      const order = created.body.data;
+      assert.deepEqual(order.wardrobeMeasurements, input.wardrobeMeasurements);
+      assert.deepEqual(order.costumes, []);
+      assert.equal(
+        (await request('POST', '/concept-orders', 'measurements', input, key)).body.data._id,
+        order._id,
+      );
+      assert.equal(
+        (
+          await request(
+            'POST',
+            '/concept-orders',
+            'measurements',
+            { ...input, wardrobeMeasurements: [{ size: 'L', heightCm: 170, weightKg: 60 }] },
+            key,
+          )
+        ).status,
+        409,
+      );
+      const staffView = await request('GET', `/concept-orders/${order._id}`, 'photo');
+      assert.equal(staffView.status, 200);
+      assert.deepEqual(staffView.body.data.wardrobeMeasurements, input.wardrobeMeasurements);
+      assert.equal((await request('GET', `/concept-orders/${order._id}`, 'photo2')).status, 404);
+      const { loadRentalHolds, rentalUsageOnDay } = require('../src/services/rentalAvailability');
+      const holds = await loadRentalHolds([String(costume._id)]);
+      assert.equal(
+        rentalUsageOnDay(
+          holds.orders,
+          holds.schedules,
+          String(costume._id),
+          'M',
+          require('../src/utils/rentalPeriod').vietnamDay(new Date(input.startAt)),
+        ).quantity,
+        0,
+      );
+      await Order.updateOne(
+        { _id: order._id },
+        { $set: { 'reservation.expiresAt': new Date(Date.now() - 1) } },
+      );
+      await require('../src/services/conceptBooking').expireConceptOrders();
+    },
+  );
   await t.test('checkout idempotency, last studio race and shared inventory hold', async () => {
     const key = randomUUID();
     const b = body();
     const r = await request('POST', '/concept-orders', 'client', b, key);
     assert.equal(r.status, 201, JSON.stringify(r.body));
+    assert.equal(r.body.data.snapshot.decor.backdrop, 'Phông kem');
     first = r.body.data;
     const retry = await request('POST', '/concept-orders', 'client', b, key);
     assert.equal(retry.body.data._id, first._id);

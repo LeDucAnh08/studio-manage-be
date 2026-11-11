@@ -51,6 +51,17 @@ const schema = new Schema(
       expiresAt: { type: Date, required: true },
     },
     costumes: { type: [costume], default: [] },
+    wardrobeMeasurements: {
+      type: [
+        {
+          _id: false,
+          size: { type: String, required: true, maxlength: 12 },
+          heightCm: { type: Number, required: true, min: 30, max: 250 },
+          weightKg: { type: Number, required: true, min: 1, max: 350 },
+        },
+      ],
+      default: [],
+    },
     wardrobe: { type: String, enum: ['pending', 'prepared', 'returned'], default: 'pending' },
     schedule: { type: Schema.Types.ObjectId, ref: 'Schedule' },
     shotAt: Date,
