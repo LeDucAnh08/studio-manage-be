@@ -1,7 +1,6 @@
 import { randomBytes } from 'crypto';
 import { ClientSession, Types } from 'mongoose';
 import RentalOrder from '../models/RentalOrder';
-import Costume from '../models/Costume';
 import Category from '../models/Category';
 import Transaction from '../models/Transaction';
 import {
@@ -24,35 +23,24 @@ export const rentalPaid = (order: any): boolean =>
   !!order.paymentLockedAt ||
   order.payments.some((item: any) => item.kind !== 'refund' && item.amount > 0);
 
-export async function automaticRentalQuote(
+// Old quotes keep their refundable security deposit; new advances are part of the rental fee.
+export const rentalChargeTotal = (quote: { fee: number; deposit: number; depositKind?: string }) =>
+  quote.fee + (quote.depositKind === 'advance' ? 0 : quote.deposit);
+
+export function automaticRentalQuote(
   lines: any[],
   period: { receiveDate: Date; returnDate: Date },
-  session: ClientSession,
 ) {
   const policy = validateRentalServiceDates(period);
-  const costumes = await Costume.find({ _id: { $in: lines.map((line) => line.costumeId) } })
-    .session(session)
-    .lean();
-  let deposit = 0;
   for (const line of lines) {
-    const item = costumes.find((costume) => String(costume._id) === String(line.costumeId));
-    if (
-      !Number.isSafeInteger(line.unitPrice) ||
-      line.unitPrice <= 0 ||
-      !item ||
-      item.rentalSecurityDeposit == null ||
-      !Number.isSafeInteger(item.rentalSecurityDeposit)
-    )
-      throw new WorkflowProblem(
-        409,
-        'Mẫu chưa cấu hình đủ giá/ngày và cọc bảo đảm. Vui lòng liên hệ studio.',
-      );
-    deposit += item.rentalSecurityDeposit * line.quantity;
+    if (!Number.isSafeInteger(line.unitPrice) || line.unitPrice <= 0)
+      throw new WorkflowProblem(409, 'Mẫu chưa cấu hình giá thuê/ngày. Vui lòng liên hệ studio.');
   }
   const days = rentalDays(period.receiveDate, period.returnDate);
   const fee = lines.reduce((sum, line) => sum + line.unitPrice * line.quantity * days, 0);
+  const deposit = Math.ceil((fee * policy.depositPercent) / 100);
   if (
-    ![fee, deposit, fee + deposit].every(
+    ![fee, deposit].every(
       (value) => Number.isSafeInteger(value) && value >= 0 && value <= 100_000_000_000,
     )
   )
@@ -66,6 +54,8 @@ export async function automaticRentalQuote(
     ...period,
     fee,
     deposit,
+    depositKind: 'advance',
+    depositPercent: policy.depositPercent,
     terms: policy.terms,
     proposedAt: new Date(),
     acceptedAt: new Date(),

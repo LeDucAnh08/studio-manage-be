@@ -11,6 +11,7 @@ import { rentalPolicy } from '../services/rentalPolicy';
 import { getRentalStage, rentalViewStatuses } from '../services/rentalStages';
 import {
   automaticRentalQuote,
+  rentalChargeTotal,
   rentalPaymentSnapshot,
   rentalPaymentDto,
   rentalPaid,
@@ -73,7 +74,7 @@ const payable = (order: any): number =>
         ? order.settlement?.acceptedAt
           ? order.settlement.total
           : order.quote.fee
-        : order.quote.fee + order.quote.deposit;
+        : rentalChargeTotal(order.quote);
 const financials = (order: any) => {
   const received = net(order),
     total = payable(order);
@@ -138,8 +139,7 @@ const dto = (order: any, req: Request) => {
           })),
         }
       : {}),
-    readyForHandover:
-      !!order.quote?.acceptedAt && net(order) === order.quote.fee + order.quote.deposit,
+    readyForHandover: !!order.quote?.acceptedAt && net(order) === rentalChargeTotal(order.quote),
     checkedOutAt: order.checkedOutAt,
     returnedAt: order.returnedAt,
     returns: order.returns,
@@ -320,7 +320,7 @@ export const createRental = async (req: Request, res: Response): Promise<void> =
       );
       assert(input.receiveDate >= vietnamDay(new Date()), 'Ngày nhận phải từ hôm nay.', 400);
       const lines = await readLines(req.body.lines, session, false, true);
-      const automaticQuote = await automaticRentalQuote(lines, input, session);
+      const automaticQuote = automaticRentalQuote(lines, input);
       await ensureRentalAvailability(automaticQuote, session);
       const expiresAt = new Date(Date.now() + policy.holdMinutes * 60000);
       const payment = rentalPaymentSnapshot(automaticQuote.deposit, expiresAt);
@@ -667,8 +667,10 @@ export const actRental = async (req: Request, res: Response): Promise<void> => {
             'Chỉ giao trong kỳ thuê đã chốt.',
           );
           assert(
-            net(order) === quote.fee + quote.deposit,
-            'Cần đủ phí thuê và cọc trước khi giao.',
+            net(order) === rentalChargeTotal(quote),
+            quote.depositKind === 'advance'
+              ? 'Cần thanh toán đủ tiền thuê trước khi giao.'
+              : 'Cần đủ phí thuê và cọc trước khi giao.',
           );
           await ensureRentalAvailability(quote, session, String(order._id));
           order.status = 'checked_out';

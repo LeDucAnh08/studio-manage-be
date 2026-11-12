@@ -23,6 +23,7 @@ import {
   beginCommand,
   cancellationAmounts,
   canReschedule,
+  conceptOrderStage,
   commandKey,
   digest,
   HOLD_MS,
@@ -281,6 +282,7 @@ export function orderDto(order: any, actor: any) {
     raw.status = 'expired';
   return {
     ...raw,
+    orderStage: conceptOrderStage(raw.status),
     netReceived: monetary ? netReceived(order) : undefined,
     canManage: admin(actor),
     canEdit: admin(actor) || assigned(order, actor),

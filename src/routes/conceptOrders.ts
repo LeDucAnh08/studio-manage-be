@@ -21,7 +21,7 @@ import {
   photoFor,
   readConceptPhoto,
 } from '../services/conceptAlbum';
-import { commandKey, integer } from '../services/conceptPolicy';
+import { commandKey, conceptOrderStatuses, integer } from '../services/conceptPolicy';
 import { WorkflowProblem } from '../services/workflowTransactions';
 import { activeConceptHoldFilter } from '../services/conceptHolds';
 import { createRateLimit } from '../middleware/authRateLimit';
@@ -42,7 +42,13 @@ router.get(
       scope = { $or: [{ photographer: actor._id }, { editor: actor._id }] };
     else if (actor.roles.includes(6)) scope = { client: actor._id };
     else throw new WorkflowProblem(403, 'Không có quyền xem đơn concept.');
-    const filter = { ...scope, ...(req.query.status ? { status: String(req.query.status) } : {}) };
+    const statusFilter =
+      req.query.view !== undefined
+        ? { status: { $in: conceptOrderStatuses(req.query.view) } }
+        : req.query.status
+          ? { status: String(req.query.status) }
+          : {};
+    const filter = { ...scope, ...statusFilter };
     const rows = await Order.find(filter)
       .sort({ createdAt: -1 })
       .skip((page - 1) * limit)

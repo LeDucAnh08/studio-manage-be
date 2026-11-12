@@ -9,6 +9,7 @@ const setting = (key: string, fallback: number, min: number, max: number) => {
   return value;
 };
 export function rentalPolicy() {
+  const depositPercent = 30;
   const holdMinutes = setting('RENTAL_HOLD_MINUTES', 15, 1, 120);
   const maxPending = setting('RENTAL_MAX_PENDING', 2, 1, 10);
   const leadHours = setting('RENTAL_MIN_LEAD_HOURS', 24, 0, 720);
@@ -26,7 +27,7 @@ export function rentalPolicy() {
   )
     throw new WorkflowProblem(503, 'Khung giờ/ngày phục vụ thuê không hợp lệ.');
   const terms = [
-    'Tiền thuê tính theo ngày, gồm cả ngày nhận và ngày trả. Cọc bảo đảm tách riêng và được đối soát sau khi nhận trả.',
+    `Tiền thuê tính theo ngày, gồm cả ngày nhận và ngày trả. Cọc trước ${depositPercent}% tổng tiền thuê (làm tròn lên đến đồng), được trừ vào tiền thuê; thanh toán phần còn lại trước khi nhận đồ.`,
     `Trang phục được giữ tạm ${holdMinutes} phút. Chưa đủ cọc khi hết hạn: đơn hết hiệu lực, số tiền đã nhận được đối soát hoàn lại.`,
     'Sau khi studio ghi nhận bất kỳ khoản cọc/thanh toán nào, khách không được hủy hoặc đổi mẫu, size, số lượng, ngày nhận/trả hay gia hạn.',
     `Nhận và trả trong khung ${openHour}:00–${closeHour}:00 (giờ Việt Nam), vào ngày studio phục vụ. Đặt trước tối thiểu ${leadHours} giờ tính đến giờ mở cửa ngày nhận.`,
@@ -52,6 +53,7 @@ export function rentalPolicy() {
         .digest('hex')
         .slice(0, 12),
     holdMinutes,
+    depositPercent,
     maxPending,
     leadHours,
     turnaroundDays,

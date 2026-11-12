@@ -21,6 +21,8 @@ const quote = new Schema(
     returnDate: Date,
     fee: Number,
     deposit: Number,
+    depositKind: { type: String, enum: ['advance', 'security'] },
+    depositPercent: Number,
     terms: [String],
     proposedAt: Date,
     acceptedAt: Date,

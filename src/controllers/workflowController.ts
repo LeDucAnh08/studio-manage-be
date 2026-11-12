@@ -39,6 +39,7 @@ import {
   bookingOrderStage,
   bookingOrderStages,
   bookingOrderStageExpression,
+  bookingShootWindow,
 } from '../services/bookingOrderStage';
 
 type Actor = NonNullable<Request['user']>;
@@ -315,7 +316,8 @@ const toDto = async (booking: any, workflow: IBookingWorkflow | null, actor: Act
     },
     workflow: {
       bookingId: String(booking._id),
-      orderStage: bookingOrderStage(booking.status, workflow),
+      orderStage: bookingOrderStage(booking.status, workflow, resources?.scheduleDetails),
+      shootWindow: bookingShootWindow(resources?.scheduleDetails),
       packageReservation: workflow?.packageReservation ?? null,
       version: workflow?.version ?? 0,
       lifecycle: booking.status === 'cancelled' ? 'cancelled' : (workflow?.lifecycle ?? 'intake'),
@@ -500,6 +502,15 @@ export const listWorkflows = async (req: Request, res: Response): Promise<void> 
               },
             },
             { $set: { __workflow: { $arrayElemAt: ['$__workflows', 0] } } },
+            {
+              $lookup: {
+                from: Schedule.collection.name,
+                localField: '__workflow.resources.schedule',
+                foreignField: '_id',
+                as: '__schedules',
+              },
+            },
+            { $set: { __schedule: { $arrayElemAt: ['$__schedules', 0] } } },
             { $match: { $expr: { $eq: [bookingOrderStageExpression, stage] } } },
             {
               $facet: {
@@ -507,7 +518,7 @@ export const listWorkflows = async (req: Request, res: Response): Promise<void> 
                   { $sort: { updatedAt: -1, _id: -1 } },
                   { $skip: (page - 1) * limit },
                   { $limit: limit },
-                  { $unset: ['__workflows', '__workflow'] },
+                  { $unset: ['__workflows', '__workflow', '__schedules', '__schedule'] },
                 ],
                 count: [{ $count: 'total' }],
               },
@@ -525,18 +536,26 @@ export const listWorkflows = async (req: Request, res: Response): Promise<void> 
         ]);
     const ids = bookings.map((booking: any) => booking._id);
     const workflows = await BookingWorkflow.find({ booking: { $in: ids } }).lean();
+    const schedules = await Schedule.find({
+      _id: { $in: workflows.map((workflow) => workflow.resources?.schedule).filter(Boolean) },
+    })
+      .select('shootDate startTime endTime')
+      .lean();
+    const bySchedule = new Map(schedules.map((schedule) => [String(schedule._id), schedule]));
     const assignments = await workflowPhotographers(workflows);
     const byBooking = new Map(
       workflows.map((workflow: any) => [String(workflow.booking), workflow]),
     );
     const data = bookings.map((booking: any) => {
       const workflow: any = byBooking.get(String(booking._id));
+      const schedule = bySchedule.get(String(workflow?.resources?.schedule));
       const payable = workflow ? currentPayable(workflow as unknown as IBookingWorkflow) : 0;
       const net = workflow ? netReceived(workflow as unknown as IBookingWorkflow) : 0;
       const financialView = canSeeAll || owner(booking, actor);
       return {
         bookingId: String(booking._id),
-        orderStage: bookingOrderStage(booking.status, workflow),
+        orderStage: bookingOrderStage(booking.status, workflow, schedule),
+        shootWindow: bookingShootWindow(schedule),
         version: workflow?.version ?? 0,
         lifecycle: booking.status === 'cancelled' ? 'cancelled' : (workflow?.lifecycle ?? 'intake'),
         assignedPhotographer: assignments.get(String(booking._id))?.assignedPhotographer ?? null,
@@ -545,8 +564,9 @@ export const listWorkflows = async (req: Request, res: Response): Promise<void> 
         packageName: booking.packageName,
         className: booking.className,
         school: booking.school,
-        startTime: workflow?.quote?.proposedSchedule?.startTime,
-        shootDate: workflow?.quote?.proposedSchedule?.shootDate ?? booking.startAt,
+        startTime: schedule?.startTime ?? workflow?.quote?.proposedSchedule?.startTime,
+        shootDate:
+          schedule?.shootDate ?? workflow?.quote?.proposedSchedule?.shootDate ?? booking.startAt,
         updatedAt: workflow?.updatedAt ?? booking.updatedAt,
         bookingStatus: booking.status,
         progressStatus: workflow?.progress?.status,

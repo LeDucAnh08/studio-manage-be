@@ -1122,6 +1122,71 @@ test('concept HTTP, shared resources, SePay, operations and Drive album', async 
       assert.equal((await Order.findById(albumOrder._id)).status, 'completed');
     },
   );
+  await t.test(
+    'customer concept stages filter before pagination and preserve ownership scope',
+    async () => {
+      actors.stages = await User.create({
+        username: 'concept.stages',
+        password: 'TestOnly123!',
+        roles: [6],
+        isActive: true,
+      });
+      const sample = await Order.findOne({ client: actors.client._id }).lean();
+      assert.ok(sample);
+      const statuses = [
+        ...Array(21).fill('confirmed'),
+        'shot',
+        'completed',
+        'cancelled',
+        'expired',
+        'awaiting_deposit',
+      ];
+      const fixtures = statuses.map((status, index) => ({
+        ...sample,
+        _id: new mongoose.Types.ObjectId(),
+        client: actors.stages._id,
+        status,
+        checkoutKey: randomUUID(),
+        fingerprint: randomUUID(),
+        createdAt: new Date(Date.now() + index),
+        reservation: {
+          status: status === 'awaiting_deposit' ? 'held' : 'released',
+          expiresAt: new Date(Date.now() + 600000),
+        },
+      }));
+      await Order.collection.insertMany(fixtures);
+      const first = await request('GET', '/concept-orders?view=all&page=1', 'stages');
+      assert.equal(first.status, 200);
+      assert.equal(first.body.pagination.total, 25);
+      assert.equal(first.body.data.length, 20);
+      assert.ok(
+        first.body.data.every((row) => row.orderStage && row.status !== 'awaiting_deposit'),
+      );
+      const second = await request('GET', '/concept-orders?view=all&page=2', 'stages');
+      assert.equal(second.body.data.length, 5);
+      assert.equal(
+        new Set([...first.body.data, ...second.body.data].map((row) => row._id)).size,
+        25,
+      );
+      for (const [view, total] of [
+        ['deposited', 21],
+        ['handing_over', 1],
+        ['completed', 1],
+        ['cancelled', 2],
+      ]) {
+        const result = await request('GET', '/concept-orders?view=' + view, 'stages');
+        assert.equal(result.status, 200);
+        assert.equal(result.body.pagination.total, total);
+        assert.ok(result.body.data.every((row) => row.orderStage === view));
+      }
+      const pending = await request('GET', '/concept-orders?status=awaiting_deposit', 'stages');
+      assert.equal(pending.body.pagination.total, 1);
+      assert.equal(pending.body.data[0].orderStage, null);
+      assert.equal((await request('GET', '/concept-orders?view=unknown', 'stages')).status, 400);
+      const other = await request('GET', '/concept-orders?view=all', 'client');
+      assert.ok(other.body.data.every((row) => row.client !== String(actors.stages._id)));
+    },
+  );
   if (process.env.CONCEPT_BROWSER_TEST === 'true')
     await t.test('real browser checkout, payment, mobile album and admin catalog', async () => {
       process.env.SEPAY_DEMO_UI = 'true';

@@ -21,7 +21,7 @@
     "test:sepay": "node --test tests/sepay-deposits.cjs",
     "sepay:maintenance": "ts-node src/utils/sepayMaintenance.ts",
     "email:outbox": "ts-node src/utils/emailOutbox.ts",
-    "test:email": "node --test tests/email-config.cjs tests/email-notifications.cjs",
+    "test:email": "node --test tests/email-config.cjs tests/sandbox-startup.cjs tests/email-notifications.cjs",
     "test:delivery": "node --test tests/booking-delivery.cjs",
     "delivery:cleanup": "ts-node src/utils/cleanupDeliveryPhotos.ts",
     "seed": "ts-node src/utils/seed.ts",

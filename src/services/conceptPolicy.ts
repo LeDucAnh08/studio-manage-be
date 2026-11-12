@@ -5,6 +5,27 @@ import { WorkflowProblem } from './workflowTransactions';
 export const conceptEnabled = () => process.env.CONCEPT_BOOKING_ENABLED === 'true';
 export const HOUR = 3600000;
 export const HOLD_MS = 15 * 60000;
+const customerOrderStatuses = {
+  deposited: ['confirmed'],
+  handing_over: ['shot'],
+  completed: ['completed'],
+  cancelled: ['cancelled', 'expired'],
+};
+export function conceptOrderStage(status: string) {
+  return (
+    Object.entries(customerOrderStatuses).find(([, statuses]) => statuses.includes(status))?.[0] ||
+    null
+  );
+}
+export function conceptOrderStatuses(view: unknown) {
+  if (view === 'all') return Object.values(customerOrderStatuses).flat();
+  if (
+    typeof view !== 'string' ||
+    !Object.prototype.hasOwnProperty.call(customerOrderStatuses, view)
+  )
+    throw new WorkflowProblem(400, 'Trạng thái đơn concept không hợp lệ.');
+  return customerOrderStatuses[view as keyof typeof customerOrderStatuses];
+}
 export const digest = (value: unknown) =>
   createHash('sha256').update(JSON.stringify(value)).digest('hex');
 export function text(value: unknown, max: number, required = true): string {

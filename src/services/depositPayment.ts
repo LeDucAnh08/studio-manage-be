@@ -41,6 +41,13 @@ export function sepayConfig() {
     accountNumber: process.env.PAYMENT_ACCOUNT_NUMBER?.trim() ?? '',
     accountName: process.env.PAYMENT_ACCOUNT_NAME?.trim() ?? '',
   };
+  // Explicit local provider Test mode keeps the user's existing catalog/database.
+  // The internal payment simulator still requires its isolated sandbox database.
+  const localProviderTest =
+    process.env.SEPAY_TEST_ON_MAIN_DB === 'true' &&
+    process.env.NODE_ENV === 'development' &&
+    mongoose.connection.name === 'studio_db' &&
+    ['localhost', '127.0.0.1', '::1', '[::1]'].includes(mongoose.connection.host || '');
   if (
     !sepayEnabled() ||
     process.env.CLIENT_WORKFLOW_ENABLED?.toLowerCase() !== 'true' ||
@@ -54,10 +61,14 @@ export function sepayConfig() {
   }
   if (
     mode === 'sandbox' &&
+    !localProviderTest &&
     (!process.env.SEPAY_SANDBOX_DATABASE?.startsWith('studio_sepay_') ||
       mongoose.connection.name !== process.env.SEPAY_SANDBOX_DATABASE)
   )
-    throw new WorkflowProblem(503, 'SePay sandbox cần database riêng có tên studio_sepay_*.');
+    throw new WorkflowProblem(
+      503,
+      'SePay sandbox cần database riêng studio_sepay_* hoặc bật Test mode rõ ràng trên studio_db local.',
+    );
   if (mode === 'live' && mongoose.connection.name?.startsWith('studio_sepay_'))
     throw new WorkflowProblem(503, 'Không được nhận tiền thật trong database sandbox.');
   // These connections require VA-specific QR rules, beyond the plain-account v1.

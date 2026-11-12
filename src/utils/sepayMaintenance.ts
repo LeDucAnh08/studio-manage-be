@@ -2,7 +2,10 @@ import fs from 'fs';
 import path from 'path';
 import dotenv from 'dotenv';
 import mongoose from 'mongoose';
-import { backfillDepositPayments } from '../services/sepayMaintenance';
+import {
+  backfillDepositPayments,
+  backfillRentalDepositPayments,
+} from '../services/sepayMaintenance';
 import { ingestSePayPayload, processSePayReceipt } from '../services/sepay';
 import { sepayConfig } from '../services/depositPayment';
 import SePayReceipt from '../models/SePayReceipt';
@@ -15,9 +18,9 @@ const option = (name: string) => {
 };
 async function main() {
   const command = process.argv[2];
-  if (!['backfill', 'replay', 'import'].includes(command))
+  if (!['backfill', 'backfill-rentals', 'replay', 'import'].includes(command))
     throw new Error(
-      'Usage: sepayMaintenance.ts backfill [--username mango] [--apply] | replay [--apply] | import --file webhook-payloads.json [--apply]',
+      'Usage: sepayMaintenance.ts backfill|backfill-rentals [--username mango] [--apply] | replay [--apply] | import --file webhook-payloads.json [--apply]',
     );
   await mongoose.connect(process.env.MONGO_URI!, { autoIndex: false });
   try {
@@ -27,10 +30,12 @@ async function main() {
       await SePayReceipt.createIndexes();
       await BookingWorkflow.createIndexes();
     }
-    if (command === 'backfill')
+    if (command === 'backfill' || command === 'backfill-rentals')
       console.log(
         JSON.stringify(
-          await backfillDepositPayments({ username: option('--username'), apply }),
+          await (
+            command === 'backfill-rentals' ? backfillRentalDepositPayments : backfillDepositPayments
+          )({ username: option('--username'), apply }),
           null,
           2,
         ),

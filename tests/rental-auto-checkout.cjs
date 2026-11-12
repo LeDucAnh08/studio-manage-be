@@ -36,9 +36,21 @@ const User = model('User'),
   Receipt = model('SePayReceipt'),
   Transaction = model('Transaction');
 const { rentalPolicy, validateRentalServiceDates } = require('../src/services/rentalPolicy');
-const { expireRentalReservations } = require('../src/services/rentalCheckout');
+const { expireRentalReservations, automaticRentalQuote, rentalChargeTotal } = require('../src/services/rentalCheckout');
 const { getRentalAvailability, loadRentalHolds } = require('../src/services/rentalAvailability');
 const { readRentalPeriod } = require('../src/utils/rentalPeriod');
+const { backfillRentalDepositPayments } = require('../src/services/sepayMaintenance');
+
+test('advance is 30% of the complete rental fee, rounded once, and does not add to the total', () => {
+  const quote = automaticRentalQuote([{ unitPrice: 115000, quantity: 3 }], readRentalPeriod('2099-10-10', '2099-10-11', false));
+  assert.equal(quote.fee, 690000);
+  assert.equal(quote.deposit, 207000);
+  assert.equal(quote.depositKind, 'advance');
+  assert.equal(quote.depositPercent, 30);
+  assert.equal(rentalChargeTotal(quote) - quote.deposit, 483000);
+  assert.equal(automaticRentalQuote([{ unitPrice: 11, quantity: 1 }], readRentalPeriod('2099-10-10', '2099-10-10', false)).deposit, 4);
+  assert.equal(rentalChargeTotal({ fee: 50000, deposit: 100000 }), 150000, 'Historical security deposits stay separate');
+});
 
 test('automatic rental checkout reserves, expires, reconciles and locks paid orders', async (t) => {
   const uri = new URL(process.env.MONGO_TEST_URI || process.env.MONGO_URI);
@@ -167,6 +179,26 @@ test('automatic rental checkout reserves, expires, reconciles and locks paid ord
   };
   t.beforeEach(reset);
 
+  await t.test('enabling SePay fills an unpaid active rental QR once without changing prices or extending the hold', async () => {
+    let order;
+    process.env.SEPAY_ENABLED = 'false';
+    try { order = (await create()).body.data; } finally { process.env.SEPAY_ENABLED = 'true'; }
+    assert.equal(order.depositPayment, null);
+    assert.deepEqual(await backfillRentalDepositPayments(), [{ rentalId: order._id, action: 'would-create' }]);
+    assert.equal((await get(order._id)).depositPayment, null, 'Preview must not write a payment');
+    assert.deepEqual(await backfillRentalDepositPayments({ apply: true }), [{ rentalId: order._id, action: 'created' }]);
+    const updated = await get(order._id);
+    assert.equal(updated.quote.deposit, order.quote.deposit);
+    assert.equal(updated.reservation.expiresAt, order.reservation.expiresAt);
+    assert.equal(updated.depositPayment.amount, 15000);
+    assert.equal(updated.depositPayment.status, 'pending');
+    assert.match(updated.depositPayment.qrUrl, /RENT/);
+    assert.deepEqual(await backfillRentalDepositPayments({ apply: true }), []);
+    assert.equal((await get(order._id)).depositPayment.reference, updated.depositPayment.reference);
+    assert.equal(await Transaction.countDocuments({}), 0);
+    await reset();
+  });
+
   await t.test(
     'canonical stage filters return matching orders, totals and preserve ownership',
     async () => {
@@ -216,10 +248,11 @@ test('automatic rental checkout reserves, expires, reconciles and locks paid ord
     },
   );
 
-  await t.test('requires consent, configured price/deposit and service dates', async () => {
+  await t.test('requires consent and configured daily prices, without requiring an old security deposit', async () => {
     assert.equal((await create(client, { ...data(), termsAccepted: false })).status, 400);
     await Costume.updateOne({ _id: item._id }, { $set: { rentalSecurityDeposit: null } });
-    assert.equal((await create()).status, 409);
+    assert.equal((await create()).status, 201);
+    await reset();
     await Costume.updateOne(
       { _id: item._id },
       { $set: { rentalSecurityDeposit: 100000, rentalDailyPrice: null } },
@@ -253,7 +286,9 @@ test('automatic rental checkout reserves, expires, reconciles and locks paid ord
         order = results[index].body.data;
       assert.equal(order.status, 'awaiting_deposit');
       assert.equal(order.quote.fee, 50000);
-      assert.equal(order.quote.deposit, 100000);
+      assert.equal(order.quote.deposit, 15000);
+      assert.equal(order.quote.depositKind, 'advance');
+      assert.equal(order.payment.payable, 50000);
       assert.ok(order.quote.acceptedAt);
       assert.match(order.depositPayment.qrUrl, /RENT/);
       const replay = await create(index ? other : client, data(), keys[index]);
@@ -283,34 +318,36 @@ test('automatic rental checkout reserves, expires, reconciles and locks paid ord
     'partial deposit locks cancellation, a duplicate credits once, and full deposit confirms',
     async () => {
       const order = (await create()).body.data;
-      const first = await transfer(order, 40000);
+      const first = await transfer(order, 6000);
       assert.equal(first.receipt.status, 'applied');
       assert.equal((await get(order._id)).status, 'awaiting_deposit');
       for (const name of ['withdraw', 'change.request', 'change.accept', 'quote.accept'])
         assert.equal((await action(order._id, client, name, { kind: 'cancel' })).status, 409);
-      await transfer(order, 40000, first.payload);
-      assert.equal((await get(order._id)).payment.netReceived, 40000);
+      await transfer(order, 6000, first.payload);
+      assert.equal((await get(order._id)).payment.netReceived, 6000);
       assert.equal(
         (
           await action(order._id, finance, 'payment.record', {
             kind: 'deposit',
-            amount: 60000,
+            amount: 9000,
             method: 'bank_transfer',
             reference: 'MANUAL-DUPLICATE',
           })
         ).status,
         409,
       );
-      await transfer(order, 60000);
+      await transfer(order, 9000);
       const paid = await get(order._id);
       assert.equal(paid.status, 'confirmed');
       assert.equal(paid.depositPayment.status, 'paid');
-      assert.equal(paid.payment.netReceived, 100000);
+      assert.equal(paid.payment.netReceived, 15000);
+      assert.equal(paid.payment.due, 35000);
+      assert.equal(paid.readyForHandover, false);
       assert.equal(
         (
           await action(order._id, finance, 'payment.record', {
             kind: 'balance',
-            amount: 50000,
+            amount: 35000,
             method: 'bank_transfer',
             reference: 'MANUAL-DUPLICATE-BALANCE',
           })
@@ -318,7 +355,7 @@ test('automatic rental checkout reserves, expires, reconciles and locks paid ord
         409,
       );
       assert.equal(await Transaction.countDocuments({ rentalOrder: order._id }), 2);
-      const balance = await transfer(order, 50000);
+      const balance = await transfer(order, 35000);
       assert.equal(balance.receipt.status, 'review');
       assert.equal(
         (
@@ -331,7 +368,8 @@ test('automatic rental checkout reserves, expires, reconciles and locks paid ord
         200,
       );
       const ready = await get(order._id);
-      assert.equal(ready.payment.netReceived, 150000);
+      assert.equal(ready.payment.netReceived, 50000);
+      assert.equal(ready.payment.due, 0);
       assert.equal(ready.readyForHandover, true);
       assert.equal(ready.reservationIssue, undefined);
       assert.equal(await Transaction.countDocuments({ rentalOrder: order._id }), 3);
@@ -349,11 +387,11 @@ test('automatic rental checkout reserves, expires, reconciles and locks paid ord
       await expireRentalReservations();
       const competitor = await create(other);
       assert.equal(competitor.status, 201);
-      await transfer(order, 100000);
+      await transfer(order, 15000);
       const failed = await get(order._id);
       assert.equal(failed.status, 'payment_review');
-      assert.equal(failed.payment.netReceived, 100000);
-      assert.equal(failed.payment.refundDue, 100000);
+      assert.equal(failed.payment.netReceived, 15000);
+      assert.equal(failed.payment.refundDue, 15000);
       assert.equal(
         (
           await action(order._id, admin, 'fulfillment.refund', {
@@ -366,7 +404,7 @@ test('automatic rental checkout reserves, expires, reconciles and locks paid ord
         (
           await action(order._id, finance, 'payment.record', {
             kind: 'refund',
-            amount: 100000,
+            amount: 15000,
             method: 'bank_transfer',
             reference: 'REFUND-QA',
           })
@@ -381,7 +419,7 @@ test('automatic rental checkout reserves, expires, reconciles and locks paid ord
     const order = (await create()).body.data;
     await Rental.updateOne({ _id: order._id }, { $set: { 'reservation.expiresAt': new Date(0) } });
     await expireRentalReservations();
-    await transfer(order, 100000);
+    await transfer(order, 15000);
     assert.equal((await get(order._id)).status, 'confirmed');
     await reset();
   });
@@ -389,7 +427,7 @@ test('automatic rental checkout reserves, expires, reconciles and locks paid ord
     'overpayment and wrong content require audited finance reconciliation; clients cannot apply it',
     async () => {
       const order = (await create()).body.data;
-      const { receipt } = await transfer(order, 110000);
+      const { receipt } = await transfer(order, 60000);
       assert.equal(receipt.status, 'review');
       assert.equal((await get(order._id)).payment.netReceived, 0);
       const route = '/payments/sepay/receipts/' + receipt._id + '/resolve-rental';
@@ -397,11 +435,12 @@ test('automatic rental checkout reserves, expires, reconciles and locks paid ord
       assert.equal((await call(route, client, body)).status, 403);
       assert.equal((await call(route, finance, body)).status, 200);
       assert.equal((await call(route, finance, body)).status, 200);
-      assert.equal((await get(order._id)).payment.netReceived, 110000);
+      assert.equal((await get(order._id)).payment.netReceived, 60000);
+      assert.equal((await get(order._id)).payment.refundDue, 10000);
       assert.equal(await Transaction.countDocuments({ rentalOrder: order._id }), 1);
       await reset();
       const next = (await create()).body.data;
-      const wrong = await transfer(next, 100000, { content: 'KHACH GHI SAI NOI DUNG' });
+      const wrong = await transfer(next, 15000, { content: 'KHACH GHI SAI NOI DUNG' });
       assert.equal(wrong.receipt.status, 'review');
       assert.equal(
         (
@@ -432,7 +471,7 @@ test('automatic rental checkout reserves, expires, reconciles and locks paid ord
         (
           await action(current._id, finance, 'payment.record', {
             kind: 'balance',
-            amount: 150000,
+            amount: 50000,
             method: 'cash',
           })
         ).status,
@@ -440,7 +479,7 @@ test('automatic rental checkout reserves, expires, reconciles and locks paid ord
       );
       assert.equal((await action(current._id, admin, 'handover')).status, 200);
       const future = (await create(other)).body.data;
-      await transfer(future, 100000);
+      await transfer(future, 15000);
       assert.equal((await get(future._id, other)).status, 'confirmed');
       assert.equal(
         (
@@ -459,7 +498,7 @@ test('automatic rental checkout reserves, expires, reconciles and locks paid ord
         ).status,
         200,
       );
-      assert.equal((await get(future._id, other)).payment.refundDue, 100000);
+      assert.equal((await get(future._id, other)).payment.refundDue, 15000);
       assert.equal(
         (
           await action(current._id, finance, 'payment.record', {
@@ -469,7 +508,7 @@ test('automatic rental checkout reserves, expires, reconciles and locks paid ord
           })
         ).status,
         409,
-        'Do not refund security deposit before customer accepts return settlement',
+        'An advance is rental revenue, not a refundable security deposit',
       );
       assert.equal(
         (
@@ -492,8 +531,8 @@ test('automatic rental checkout reserves, expires, reconciles and locks paid ord
       assert.equal(
         (
           await action(current._id, finance, 'payment.record', {
-            kind: 'refund',
-            amount: 80000,
+            kind: 'balance',
+            amount: 20000,
             method: 'cash',
           })
         ).status,
@@ -512,7 +551,7 @@ test('automatic rental checkout reserves, expires, reconciles and locks paid ord
     async () => {
       const order = (await create()).body.data;
       assert.equal((await action(order._id, client, 'withdraw')).status, 200);
-      const { receipt } = await transfer(order, 100000);
+      const { receipt } = await transfer(order, 15000);
       assert.equal(receipt.status, 'review');
       const response = await call(
         '/payments/sepay/receipts/' + receipt._id + '/resolve-rental',
@@ -522,17 +561,19 @@ test('automatic rental checkout reserves, expires, reconciles and locks paid ord
       assert.equal(response.status, 200);
       const updated = await get(order._id);
       assert.equal(updated.status, 'cancelled');
-      assert.equal(updated.payment.refundDue, 100000);
+      assert.equal(updated.payment.refundDue, 15000);
       await reset();
     },
   );
   await t.test(
-    'zero-deposit items confirm immediately and turnaround keeps cleaning stock unavailable',
+    'old zero-security-deposit settings do not bypass the advance; turnaround protects cleaning stock',
     async () => {
       await Costume.updateOne({ _id: item._id }, { $set: { rentalSecurityDeposit: 0 } });
       const order = (await create()).body.data;
-      assert.equal(order.status, 'confirmed');
-      assert.equal(order.depositPayment, null);
+      assert.equal(order.status, 'awaiting_deposit');
+      assert.equal(order.depositPayment.amount, 15000);
+      await transfer(order, 15000);
+      assert.equal((await get(order._id)).status, 'confirmed');
       assert.equal((await create(other, data(11))).status, 409);
       assert.equal((await create(other, data(12))).status, 201);
       await Rental.updateOne(
@@ -582,7 +623,7 @@ test('automatic rental checkout reserves, expires, reconciles and locks paid ord
         );
         assert.equal((await call(route, client, body, key)).status, 200);
         assert.equal((await get(order._id)).status, 'confirmed');
-        assert.equal((await get(order._id)).payment.netReceived, 100000);
+        assert.equal((await get(order._id)).payment.netReceived, 15000);
         assert.equal(await Receipt.countDocuments({}), 1);
         assert.equal(await Receipt.countDocuments({ hasConflict: true }), 0);
         process.env.NODE_ENV = 'production';
