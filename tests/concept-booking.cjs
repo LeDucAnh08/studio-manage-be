@@ -416,6 +416,7 @@ test('concept HTTP, shared resources, SePay, operations and Drive album', async 
       (
         await request('POST', '/concepts/profile', 'admin', {
           photographer: String(actors.photo._id),
+          revision: (await Profile.findOne({ photographer: actors.photo._id })).revision || 0,
           concepts: [String(concept._id)],
           published: true,
           bio: 'Thợ',
@@ -437,6 +438,7 @@ test('concept HTTP, shared resources, SePay, operations and Drive album', async 
     async () => {
       const doc = await Profile.findOne({ photographer: actors.photo._id });
       const baseProfile = {
+        revision: doc.revision || 0,
         id: String(doc._id),
         photographer: String(actors.photo._id),
         concepts: [String(concept._id)],
@@ -475,6 +477,7 @@ test('concept HTTP, shared resources, SePay, operations and Drive album', async 
           .status,
         200,
       );
+      baseProfile.revision += 1;
       const url = `/concepts/photographers/${actors.photo._id}`;
       let result = await request('GET', url, '');
       assert.equal(result.status, 200);
@@ -484,6 +487,7 @@ test('concept HTTP, shared resources, SePay, operations and Drive album', async 
       for (const privateField of ['email', 'phone', 'password', 'roles', 'published', 'createdAt'])
         assert.equal(privateField in result.body.data, false);
       assert.equal((await request('POST', '/concepts/profile', 'admin', baseProfile)).status, 200);
+      baseProfile.revision += 1;
       result = await request('GET', url, '');
       for (const [field, value] of Object.entries(content))
         assert.deepEqual(result.body.data[field], value);

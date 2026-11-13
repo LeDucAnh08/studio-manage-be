@@ -1,4 +1,9 @@
 import { Router } from 'express';
+import {
+  publicPortfolio,
+  profileContent,
+  saveAdminPortfolio,
+} from '../services/photographerPortfolio';
 import mongoose, { ClientSession } from 'mongoose';
 import Concept from '../models/Concept';
 import Package from '../models/ConceptPackage';
@@ -48,48 +53,13 @@ export const conceptHandler = (fn: (req: any, res: any) => Promise<void>) =>
     }
   });
 const router = Router();
-const profileTextLimits = {
-  title: 120,
-  tagline: 180,
-  story: 4000,
-  specialty: 300,
-  style: 600,
-  guidance: 600,
-  philosophy: 1500,
-};
 router.use(conceptGate);
 router.use(createRateLimit({ limit: 120, windowMs: 60000, message: 'Thử lại sau một phút.' }));
 router.get(
   '/photographers/:id',
   conceptHandler(async (req, res) => {
-    const id = objectId(req.params.id);
-    const profile = await Profile.findOne({ photographer: id, published: true }).lean();
-    const photographer = await User.findOne({ _id: id, roles: 3, isActive: true })
-      .select('_id name')
-      .lean();
-    if (!profile || !photographer) throw new WorkflowProblem(404, 'Hồ sơ thợ chưa được công khai.');
-    const concepts = await Concept.find({ _id: { $in: profile.concepts }, active: true })
-      .select('_id name')
-      .lean();
-    if (!concepts.length) throw new WorkflowProblem(404, 'Hồ sơ thợ chưa được công khai.');
-    const activeIds = new Set(concepts.map((c) => String(c._id)));
-    sendResponse(res, 200, true, 'OK', {
-      _id: String(photographer._id),
-      name: photographer.name,
-      bio: profile.bio,
-      portraitUrl: profile.portraitUrl,
-      coverUrl: profile.coverUrl,
-      ...Object.fromEntries(
-        Object.keys(profileTextLimits).map((field) => [field, (profile as any)[field] || '']),
-      ),
-      approach: profile.approach,
-      audience: profile.audience,
-      milestones: profile.milestones,
-      concepts,
-      portfolio: profile.portfolio
-        .filter((p) => p.permitted && activeIds.has(String(p.concept)))
-        .map((p) => ({ concept: String(p.concept), url: p.url, caption: p.caption })),
-    });
+    res.setHeader('Cache-Control', 'no-store');
+    sendResponse(res, 200, true, 'OK', await publicPortfolio(objectId(req.params.id)));
   }),
 );
 router.get(
@@ -176,7 +146,11 @@ router.get(
     sendResponse(res, 200, true, 'OK', {
       concepts: await Concept.find().lean(),
       packages: await Package.find().lean(),
-      profiles: await Profile.find().lean(),
+      profiles: (await Profile.find().lean()).map((p) => ({
+        ...p,
+        ...profileContent(p.draft || p),
+        revision: p.revision || 0,
+      })),
       photographers: await User.find({ roles: 3, isActive: true })
         .select('_id name username')
         .lean(),
@@ -331,55 +305,8 @@ router.post(
           );
         }
       } else if (kind === 'profile') {
-        model = Profile;
-        const photographer = objectId(b.photographer);
-        if (!(await User.exists({ _id: photographer, roles: 3, isActive: true }).session(session)))
-          throw new WorkflowProblem(400, 'Thợ không hợp lệ.');
-        if (
-          !Array.isArray(b.concepts) ||
-          b.concepts.length > 100 ||
-          !Array.isArray(b.portfolio) ||
-          b.portfolio.length > 100
-        )
-          throw new WorkflowProblem(400, 'Danh sách không hợp lệ.');
-        const concepts = [...new Set<string>(b.concepts.map(objectId))];
-        if (
-          (await Concept.countDocuments({ _id: { $in: concepts } }).session(session)) !==
-          concepts.length
-        )
-          throw new WorkflowProblem(400, 'Concept không tồn tại.');
-        data = {
-          photographer,
-          concepts,
-          bio: text(b.bio, 2000, false),
-          published: b.published === true,
-          portfolio: b.portfolio.map((p: any) => {
-            if (!concepts.includes(p.concept) || p.permitted !== true)
-              throw new WorkflowProblem(
-                400,
-                'Ảnh portfolio phải đúng concept và được phép công khai.',
-              );
-            return {
-              concept: p.concept,
-              url: conceptImageUrl(p.url),
-              caption: text(p.caption, 200, false),
-              permitted: true,
-            };
-          }),
-        };
-        for (const [field, max] of Object.entries(profileTextLimits))
-          if (b[field] !== undefined) data[field] = text(b[field], max, false);
-        for (const field of ['portraitUrl', 'coverUrl'])
-          if (b[field] !== undefined) data[field] = b[field] ? conceptImageUrl(b[field]) : '';
-        for (const [field, max] of Object.entries({ approach: 4, audience: 4, milestones: 6 })) {
-          if (b[field] === undefined) continue;
-          if (!Array.isArray(b[field]) || b[field].length > max)
-            throw new WorkflowProblem(400, 'Nội dung hồ sơ không hợp lệ.');
-          data[field] = b[field].map((item: any) => ({
-            title: text(item?.title, 120),
-            description: text(item?.description, 600, false),
-          }));
-        }
+        await saveAdminPortfolio(b, session);
+        return;
       } else throw new WorkflowProblem(404, 'Không có danh mục này.');
       if (b.id) {
         const old = await model.findById(objectId(b.id)).session(session);

@@ -235,6 +235,60 @@ const photographerReadScope = (req: Request): Record<string, unknown> =>
     ? { $or: [{ leadPhotographer: req.user!._id }, { supportPhotographers: req.user!._id }] }
     : {};
 
+/** Personal calendar is always scoped to the caller, including multi-role users. */
+export const getMyCalendar = async (req: Request, res: Response): Promise<void> => {
+  const { from, to } = req.query;
+  const validDay = (value: unknown): value is string => {
+    if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+    const date = new Date(`${value}T00:00:00Z`);
+    return Number.isFinite(+date) && date.toISOString().slice(0, 10) === value;
+  };
+  if (!validDay(from) || !validDay(to)) {
+    sendResponse(res, 400, false, 'Ngày bắt đầu và kết thúc lịch không hợp lệ.');
+    return;
+  }
+  const start = new Date(`${from}T00:00:00+07:00`);
+  const end = new Date(`${to}T00:00:00+07:00`);
+  const days = (+end - +start) / 86400000 + 1;
+  if (days < 1 || days > 42) {
+    sendResponse(res, 400, false, 'Lịch cá nhân chỉ tải tối đa 42 ngày mỗi lần.');
+    return;
+  }
+  const rows = await Schedule.find({
+    $or: [{ leadPhotographer: req.user!._id }, { supportPhotographers: req.user!._id }],
+    shootDate: { $gte: start, $lt: new Date(+end + 86400000) },
+  })
+    .select(
+      '_id customer package conceptOrder conceptTitle shootDate startTime endTime location status notes leadPhotographer',
+    )
+    .populate('customer', 'className school')
+    .populate('package', 'name')
+    .sort({ shootDate: 1, startTime: 1, _id: 1 })
+    .lean();
+  sendResponse(
+    res,
+    200,
+    true,
+    'OK',
+    rows.map((row) => ({
+      _id: String(row._id),
+      shootDate: row.shootDate,
+      startTime: row.startTime,
+      endTime: row.endTime,
+      location: row.location || '',
+      status: row.status,
+      notes: row.notes || '',
+      service: row.conceptOrder ? 'concept' : 'yearbook',
+      title: row.conceptOrder
+        ? row.conceptTitle || 'Chụp concept'
+        : (row.customer as unknown as { className?: string } | null)?.className ||
+          (row.package as unknown as { name?: string } | null)?.name ||
+          'Chụp kỉ yếu',
+      role: String(row.leadPhotographer) === String(req.user!._id) ? 'lead' : 'support',
+    })),
+  );
+};
+
 export const getAll = async (req: Request, res: Response): Promise<void> => {
   const { page = '1', limit = '20', season, ...rest } = req.query as ScheduleQuery;
   const filter = { ...buildFilter(rest), ...photographerReadScope(req) };

@@ -301,6 +301,7 @@ const toDto = async (booking: any, workflow: IBookingWorkflow | null, actor: Act
       cancelledAt: booking.cancelledAt,
       cancellationReason: booking.cancellationReason,
       packageName: booking.packageName,
+      packageId: (clientView || canManage) && booking.package ? String(booking.package) : undefined,
       pricePerMember: booking.pricePerMember,
       packageAgreement: financialView ? booking.packageAgreement : undefined,
       members: booking.members,
