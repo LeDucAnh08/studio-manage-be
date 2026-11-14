@@ -426,6 +426,57 @@ export const getWorkflow = async (req: Request, res: Response): Promise<void> =>
   }
 };
 
+export async function workflowListRows(bookings: any[], actor: Actor) {
+  const canSeeAll = admin(actor) || isRole(actor, 5);
+  const ids = bookings.map((booking: any) => booking._id);
+  const workflows = await BookingWorkflow.find({ booking: { $in: ids } }).lean();
+  const schedules = await Schedule.find({
+    _id: { $in: workflows.map((workflow) => workflow.resources?.schedule).filter(Boolean) },
+  })
+    .select('shootDate startTime endTime')
+    .lean();
+  const bySchedule = new Map(schedules.map((schedule) => [String(schedule._id), schedule]));
+  const assignments = await workflowPhotographers(workflows);
+  const byBooking = new Map(workflows.map((workflow: any) => [String(workflow.booking), workflow]));
+  return bookings.map((booking: any) => {
+    const workflow: any = byBooking.get(String(booking._id));
+    const schedule = bySchedule.get(String(workflow?.resources?.schedule));
+    const payable = workflow ? currentPayable(workflow as unknown as IBookingWorkflow) : 0;
+    const net = workflow ? netReceived(workflow as unknown as IBookingWorkflow) : 0;
+    const financialView = canSeeAll || owner(booking, actor);
+    return {
+      bookingId: String(booking._id),
+      orderStage: bookingOrderStage(booking.status, workflow, schedule),
+      shootWindow: bookingShootWindow(schedule),
+      version: workflow?.version ?? 0,
+      lifecycle: booking.status === 'cancelled' ? 'cancelled' : (workflow?.lifecycle ?? 'intake'),
+      assignedPhotographer: assignments.get(String(booking._id))?.assignedPhotographer ?? null,
+      assignedSupportPhotographers:
+        assignments.get(String(booking._id))?.assignedSupportPhotographers ?? [],
+      packageName: booking.packageName,
+      className: booking.className,
+      school: booking.school,
+      startTime: schedule?.startTime ?? workflow?.quote?.proposedSchedule?.startTime,
+      shootDate:
+        schedule?.shootDate ?? workflow?.quote?.proposedSchedule?.shootDate ?? booking.startAt,
+      updatedAt: workflow?.updatedAt ?? booking.updatedAt,
+      bookingStatus: booking.status,
+      progressStatus: workflow?.progress?.status,
+      ...(financialView
+        ? {
+            payment: {
+              netReceived: net,
+              totalDue: Math.max(0, payable - net),
+              refundDue: isAppliedFinancialChange(workflow ?? ({} as IBookingWorkflow))
+                ? Math.max(0, net - payable)
+                : 0,
+            },
+          }
+        : {}),
+    };
+  });
+}
+
 export const listWorkflows = async (req: Request, res: Response): Promise<void> => {
   try {
     await expirePendingBookings();
@@ -535,55 +586,7 @@ export const listWorkflows = async (req: Request, res: Response): Promise<void> 
             .lean(),
           Booking.countDocuments(bookingFilter),
         ]);
-    const ids = bookings.map((booking: any) => booking._id);
-    const workflows = await BookingWorkflow.find({ booking: { $in: ids } }).lean();
-    const schedules = await Schedule.find({
-      _id: { $in: workflows.map((workflow) => workflow.resources?.schedule).filter(Boolean) },
-    })
-      .select('shootDate startTime endTime')
-      .lean();
-    const bySchedule = new Map(schedules.map((schedule) => [String(schedule._id), schedule]));
-    const assignments = await workflowPhotographers(workflows);
-    const byBooking = new Map(
-      workflows.map((workflow: any) => [String(workflow.booking), workflow]),
-    );
-    const data = bookings.map((booking: any) => {
-      const workflow: any = byBooking.get(String(booking._id));
-      const schedule = bySchedule.get(String(workflow?.resources?.schedule));
-      const payable = workflow ? currentPayable(workflow as unknown as IBookingWorkflow) : 0;
-      const net = workflow ? netReceived(workflow as unknown as IBookingWorkflow) : 0;
-      const financialView = canSeeAll || owner(booking, actor);
-      return {
-        bookingId: String(booking._id),
-        orderStage: bookingOrderStage(booking.status, workflow, schedule),
-        shootWindow: bookingShootWindow(schedule),
-        version: workflow?.version ?? 0,
-        lifecycle: booking.status === 'cancelled' ? 'cancelled' : (workflow?.lifecycle ?? 'intake'),
-        assignedPhotographer: assignments.get(String(booking._id))?.assignedPhotographer ?? null,
-        assignedSupportPhotographers:
-          assignments.get(String(booking._id))?.assignedSupportPhotographers ?? [],
-        packageName: booking.packageName,
-        className: booking.className,
-        school: booking.school,
-        startTime: schedule?.startTime ?? workflow?.quote?.proposedSchedule?.startTime,
-        shootDate:
-          schedule?.shootDate ?? workflow?.quote?.proposedSchedule?.shootDate ?? booking.startAt,
-        updatedAt: workflow?.updatedAt ?? booking.updatedAt,
-        bookingStatus: booking.status,
-        progressStatus: workflow?.progress?.status,
-        ...(financialView
-          ? {
-              payment: {
-                netReceived: net,
-                totalDue: Math.max(0, payable - net),
-                refundDue: isAppliedFinancialChange(workflow ?? ({} as IBookingWorkflow))
-                  ? Math.max(0, net - payable)
-                  : 0,
-              },
-            }
-          : {}),
-      };
-    });
+    const data = await workflowListRows(bookings, actor);
     sendResponse(res, 200, true, 'OK', data, { total, page, limit });
   } catch (error) {
     const problem = error as WorkflowProblem;

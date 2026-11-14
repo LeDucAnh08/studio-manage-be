@@ -14,6 +14,27 @@ import { conceptEnabled } from '../services/conceptPolicy';
 import { WorkflowProblem } from '../services/workflowTransactions';
 import { sendResponse } from '../utils/response';
 
+export const conceptShootStageExpression = {
+  $switch: {
+    branches: [
+      { case: { $in: ['$status', ['cancelled', 'expired']] }, then: 'cancelled' },
+      { case: { $eq: ['$status', 'completed'] }, then: 'completed' },
+      { case: { $eq: ['$status', 'shot'] }, then: 'editing' },
+      {
+        case: { $eq: ['$status', 'confirmed'] },
+        then: {
+          $cond: [
+            { $lt: ['$$NOW', '$startAt'] },
+            'confirmed',
+            { $cond: [{ $lt: ['$$NOW', '$endAt'] }, 'active', 'editing'] },
+          ],
+        },
+      },
+    ],
+    default: 'awaiting_confirmation',
+  },
+};
+
 // Shared caller scope for the photographer list and its statistics.
 export function photographerOrdersPipeline(
   actor: Types.ObjectId,
@@ -139,26 +160,7 @@ export function photographerOrdersPipeline(
         service: { $literal: 'concept' },
         title: '$snapshot.conceptName',
         packageName: '$snapshot.name',
-        stage: {
-          $switch: {
-            branches: [
-              { case: { $in: ['$status', ['cancelled', 'expired']] }, then: 'cancelled' },
-              { case: { $eq: ['$status', 'completed'] }, then: 'completed' },
-              { case: { $eq: ['$status', 'shot'] }, then: 'editing' },
-              {
-                case: { $eq: ['$status', 'confirmed'] },
-                then: {
-                  $cond: [
-                    { $lt: ['$$NOW', '$startAt'] },
-                    'confirmed',
-                    { $cond: [{ $lt: ['$$NOW', '$endAt'] }, 'active', 'editing'] },
-                  ],
-                },
-              },
-            ],
-            default: 'awaiting_confirmation',
-          },
-        },
+        stage: conceptShootStageExpression,
         shootDate: '$startAt',
         startTime: {
           $dateToString: { date: '$startAt', format: '%H:%M', timezone: 'Asia/Ho_Chi_Minh' },
