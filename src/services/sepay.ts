@@ -78,7 +78,7 @@ export function parseSePayPayload(input: unknown) {
 
 const referenceFrom = (content: string, code?: string) => {
   const matches = [
-    ...new Set(content.toUpperCase().match(/\b(?:YUME|RENT|CONC)[A-F0-9]{16}\b/g) ?? []),
+    ...new Set(content.toUpperCase().match(/\b(?:YUME|RENT|RENB|CONC)[A-F0-9]{16}\b/g) ?? []),
   ];
   if (matches.length !== 1 || (code && code.toUpperCase() !== matches[0])) return null;
   return matches[0];
@@ -96,7 +96,11 @@ export async function processSePayReceipt(receiptId: string | Types.ObjectId) {
         await applyConceptReceipt(receipt, session, config);
         return;
       }
-      if (reference?.startsWith('RENT') && (await applyRentalReceipt(receipt, session, config)))
+      if (
+        reference &&
+        /^(RENT|RENB)/.test(reference) &&
+        (await applyRentalReceipt(receipt, session, config))
+      )
         return;
       const workflow = reference
         ? await BookingWorkflow.findOne({ 'depositPayment.reference': reference }).session(session)

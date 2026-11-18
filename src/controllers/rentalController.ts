@@ -115,6 +115,7 @@ const dto = (order: any, req: Request) => {
     changesLocked: rentalPaid(order),
     reservation: order.reservation,
     depositPayment: finance ? rentalPaymentDto(order) : undefined,
+    balancePayment: finance ? rentalPaymentDto(order, 'balance') : undefined,
     reservationIssue: order.reservationIssue,
     contactName: order.contactName,
     phone: roles(req, 5) && !roles(req, 0, 1, 2, 4, 6) ? undefined : order.phone,
@@ -619,6 +620,11 @@ export const actRental = async (req: Request, res: Response): Promise<void> => {
               'Chỉ hoàn số dư sau khi khách đồng ý đối soát/hủy.',
             );
           else {
+            const balancePayment = rentalPaymentDto(order, 'balance');
+            assert(
+              balancePayment?.status !== 'pending' && !balancePayment?.requiresReview,
+              'Khoản tiền thuê còn lại được ghi nhận qua SePay hoặc màn đối soát.',
+            );
             assert(
               !order.returnedAt || order.settlement?.acceptedAt,
               'Cần khách đồng ý đối soát trước khi thu phát sinh.',

@@ -5,6 +5,8 @@ import { sendResponse } from '../utils/response';
 import crypto from 'crypto';
 import BookingWorkflow from '../models/BookingWorkflow';
 import Schedule from '../models/Schedule';
+import Student from '../models/Student';
+import { isValidObjectId } from 'mongoose';
 import {
   withResourceTransaction,
   WorkflowProblem,
@@ -30,6 +32,55 @@ export const getOne = async (req: Request, res: Response): Promise<void> => {
     return;
   }
   sendResponse(res, 200, true, 'OK', customer);
+};
+
+interface ClassStudent {
+  _id: unknown;
+  name: string;
+  gender?: string;
+  contact?: string;
+  height?: number;
+  weight?: number;
+  pantsSize?: string;
+  shirtSize?: string;
+  notes?: string;
+}
+
+export const getStudents = async (req: Request, res: Response): Promise<void> => {
+  const id = req.params.id;
+  if (!isValidObjectId(id)) {
+    sendResponse(res, 400, false, 'Mã lớp không hợp lệ.');
+    return;
+  }
+  if (!(await Customer.exists({ _id: id }))) {
+    sendResponse(res, 404, false, 'Không tìm thấy lớp học.');
+    return;
+  }
+  const workflow = await BookingWorkflow.findOne({ customer: id })
+    .select('members')
+    .lean<{ members: ClassStudent[] } | null>();
+  // Booking members retain contact and clothing sizes separately from legacy notes.
+  const members: ClassStudent[] = workflow
+    ? (workflow.members ?? [])
+    : await Student.find({ customer: id })
+        .select('name gender height weight pantsSize shirtSize notes')
+        .sort({ createdAt: 1, _id: 1 })
+        .lean();
+  const students = members.map((member) => ({
+    _id: String(member._id),
+    name: member.name,
+    gender: member.gender,
+    contact: member.contact,
+    height: member.height,
+    weight: member.weight,
+    pantsSize: member.pantsSize,
+    shirtSize: member.shirtSize,
+    notes: member.notes,
+  }));
+  sendResponse(res, 200, true, 'OK', {
+    source: workflow ? 'booking' : 'legacy',
+    students,
+  });
 };
 
 export const create = async (req: Request, res: Response): Promise<void> => {

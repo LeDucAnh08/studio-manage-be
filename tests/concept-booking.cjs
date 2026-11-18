@@ -709,6 +709,7 @@ test('concept HTTP, shared resources, SePay, operations and Drive album', async 
       );
       const staffView = await request('GET', `/concept-orders/${order._id}`, 'photo');
       assert.equal(staffView.status, 200);
+      assert.equal(staffView.body.data.photographerName, actors.photo.name);
       assert.deepEqual(staffView.body.data.wardrobeMeasurements, input.wardrobeMeasurements);
       assert.equal((await request('GET', `/concept-orders/${order._id}`, 'photo2')).status, 404);
       const { loadRentalHolds, rentalUsageOnDay } = require('../src/services/rentalAvailability');

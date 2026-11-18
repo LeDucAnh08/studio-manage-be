@@ -120,13 +120,20 @@ router.get(
   '/:id',
   conceptHandler(async (req, res) => {
     await expireConceptOrders();
-    sendResponse(
-      res,
-      200,
-      true,
-      'OK',
-      orderDto(await accessOrder(req.params.id, req.user), req.user),
-    );
+    const order = await accessOrder(req.params.id, req.user);
+    const dto = orderDto(order, req.user);
+    if (dto.canEdit && !dto.canAccount && !dto.isOwner) {
+      const ids = [order.photographer, order.editor].filter(Boolean);
+      const crew = await User.find({ _id: { $in: ids } })
+        .select('name username')
+        .lean();
+      const names = new Map(
+        crew.map((person) => [String(person._id), person.name || person.username]),
+      );
+      dto.photographerName = names.get(String(order.photographer));
+      dto.editorName = names.get(String(order.editor));
+    }
+    sendResponse(res, 200, true, 'OK', dto);
   }),
 );
 router.get(

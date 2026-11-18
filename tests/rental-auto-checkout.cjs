@@ -357,6 +357,7 @@ test('automatic rental checkout reserves, expires, reconciles and locks paid ord
       assert.equal(await Transaction.countDocuments({ rentalOrder: order._id }), 2);
       const balance = await transfer(order, 35000);
       assert.equal(balance.receipt.status, 'review');
+      assert.equal((await get(order._id)).balancePayment.qrUrl, null);
       assert.equal(
         (
           await call(
@@ -452,6 +453,90 @@ test('automatic rental checkout reserves, expires, reconciles and locks paid ord
         200,
       );
       assert.equal((await get(next._id)).status, 'confirmed');
+      await reset();
+    },
+  );
+  await t.test(
+    'collects balance by separate QR, credits partial receipts once, and enables handover',
+    async () => {
+      const order = (await create()).body.data;
+      assert.equal(order.balancePayment.status, 'unavailable');
+      assert.equal(order.balancePayment.qrUrl, null);
+      await transfer(order, 15000);
+      const confirmed = await get(order._id);
+      const payment = confirmed.balancePayment;
+      assert.equal(payment.status, 'pending');
+      assert.match(payment.reference, /^RENB[A-F0-9]{16}$/);
+      assert.equal(payment.amount, 35000);
+      assert.equal(new URL(payment.qrUrl).searchParams.get('des'), payment.reference);
+      assert.equal(
+        +new Date(payment.expiresAt),
+        +new Date(confirmed.quote.returnDate) + 86400000,
+      );
+      assert.equal((await action(order._id, finance, 'payment.record', {
+        kind: 'balance', amount: 35000, method: 'cash',
+      })).status, 409);
+      const reference = { content: payment.reference, code: payment.reference };
+      const partial = await transfer(order, 10000, reference);
+      assert.equal(partial.receipt.status, 'applied');
+      await transfer(order, 10000, partial.payload);
+      assert.equal((await get(order._id)).balancePayment.amount, 25000);
+      assert.equal((await get(order._id)).balancePayment.expiresAt, payment.expiresAt);
+      assert.equal((await get(order._id)).readyForHandover, false);
+      assert.equal((await transfer(order, 25000, reference)).receipt.status, 'applied');
+      const ready = await get(order._id);
+      assert.equal(ready.balancePayment.status, 'paid');
+      assert.equal(ready.balancePayment.qrUrl, null);
+      assert.equal(ready.payment.netReceived, 50000);
+      assert.equal(ready.readyForHandover, true);
+      assert.equal(await Transaction.countDocuments({ rentalOrder: order._id }), 3);
+      await reset();
+    },
+  );
+  await t.test(
+    'an overpayment stops the balance QR until finance reconciles it',
+    async () => {
+      const order = (await create()).body.data;
+      await transfer(order, 15000);
+      const { reference } = (await get(order._id)).balancePayment;
+      const over = await transfer(order, 36000, { content: reference, code: reference });
+      assert.equal(over.receipt.status, 'review');
+      const reviewing = await get(order._id);
+      assert.equal(reviewing.balancePayment.requiresReview, true);
+      assert.equal(reviewing.balancePayment.qrUrl, null);
+      assert.equal(reviewing.payment.due, 35000);
+      assert.equal((await call('/payments/sepay/receipts/' + over.receipt._id + '/resolve-rental',
+        finance, { rentalId: order._id, note: 'Xác nhận khách trả dư 1.000 đ' })).status, 200);
+      const ready = await get(order._id);
+      assert.equal(ready.balancePayment.status, 'paid');
+      assert.equal(ready.balancePayment.qrUrl, null);
+      assert.equal(ready.payment.netReceived, 51000);
+      assert.equal(ready.payment.refundDue, 1000);
+      assert.equal(ready.readyForHandover, false);
+      assert.equal((await action(order._id, finance, 'payment.record', {
+        kind: 'refund', amount: 1000, method: 'bank_transfer',
+      })).status, 200);
+      assert.equal((await get(order._id)).readyForHandover, true);
+      assert.equal(await Transaction.countDocuments({ rentalOrder: order._id }), 3);
+      await reset();
+    },
+  );
+  await t.test(
+    'a balance transfer arriving after the payment deadline requires reconciliation',
+    async () => {
+      const order = (await create()).body.data;
+      await transfer(order, 15000);
+      const { reference } = (await get(order._id)).balancePayment;
+      const yesterday = new Date(Date.now() + 7 * 3600000 - 86400000).toISOString().slice(0, 10);
+      const period = readRentalPeriod(yesterday, yesterday, false);
+      await Rental.updateOne({ _id: order._id }, { $set: {
+        'quote.receiveDate': period.receiveDate,
+        'quote.returnDate': period.returnDate,
+      } });
+      assert.equal((await get(order._id)).balancePayment.status, 'expired');
+      const late = await transfer(order, 35000, { content: reference, code: reference });
+      assert.equal(late.receipt.status, 'review');
+      assert.equal((await get(order._id)).payment.netReceived, 15000);
       await reset();
     },
   );
@@ -647,11 +732,14 @@ test('automatic rental checkout reserves, expires, reconciles and locks paid ord
       await Costume.updateOne({ _id: item._id }, { $set: { rentalSecurityDeposit: 100000 } });
       process.env.NODE_ENV = 'development';
       process.env.SEPAY_DEMO_UI = 'true';
+      const order = (await create()).body.data;
       await require('../../ops/tests/rental-auto-checkout-browser.cjs')({
         apiOrigin: base,
         client,
-        token: jwt.sign({ id: String(client._id) }, process.env.JWT_SECRET),
-        itemId: String(item._id),
+        token: jwt.sign({ id: String(client._id) }, process.env.JWT_SECRET, { expiresIn: '10m' }),
+        admin,
+        adminToken: jwt.sign({ id: String(admin._id) }, process.env.JWT_SECRET, { expiresIn: '10m' }),
+        rentalId: String(order._id),
         get,
       });
     });

@@ -7,7 +7,7 @@ import ConceptOrder from '../models/ConceptOrder';
 import { paymentDto } from './conceptBooking';
 import SePayReceipt from '../models/SePayReceipt';
 import { depositPaymentDto, sandboxUiEnabled, sepayConfig } from './depositPayment';
-import { rentalPaymentDto } from './rentalCheckout';
+import { rentalDepositReference, rentalPaymentDto } from './rentalCheckout';
 import { ingestSePayPayload, processSePayReceipt } from './sepay';
 import { WorkflowProblem } from './workflowTransactions';
 
@@ -19,7 +19,7 @@ export async function simulateSandboxDeposit(
   if (!sandboxUiEnabled()) throw new WorkflowProblem(404, 'Không có chức năng này.');
   if (
     typeof reference !== 'string' ||
-    !/^(?:RENT|YUME|CONC)[A-F0-9]{16}$/.test(reference) ||
+    !/^(?:RENT|RENB|YUME|CONC)[A-F0-9]{16}$/.test(reference) ||
     typeof key !== 'string' ||
     !/^[a-zA-Z0-9_-]{8,128}$/.test(key)
   )
@@ -38,15 +38,15 @@ export async function simulateSandboxDeposit(
       payment = paymentDto(request);
       createdAt = request.createdAt;
     }
-  } else if (reference.startsWith('RENT')) {
+  } else if (/^(RENT|RENB)/.test(reference)) {
     const order = await RentalOrder.findOne({
-      'depositPayment.reference': reference,
+      'depositPayment.reference': rentalDepositReference(reference),
       ...(!staff ? { client: actor._id } : {}),
     })
       .select('+depositPayment')
       .lean();
     if (order) {
-      payment = rentalPaymentDto(order);
+      payment = rentalPaymentDto(order, reference.startsWith('RENB') ? 'balance' : 'deposit');
       createdAt = new Date(order.depositPayment.createdAt);
     }
   } else {
@@ -73,7 +73,7 @@ export async function simulateSandboxDeposit(
     return { status: (await SePayReceipt.findById(prior._id))!.status };
   }
   if (payment.status !== 'pending' || payment.amount <= 0)
-    throw new WorkflowProblem(409, 'Đơn không còn trong thời hạn đặt cọc. Hãy tải lại hồ sơ.');
+    throw new WorkflowProblem(409, 'Phiên thanh toán không còn hiệu lực. Hãy tải lại hồ sơ.');
   const id = await ingestSePayPayload({
     id: parseInt(hash.slice(0, 12), 16) || 1,
     gateway: config.bankGateway,

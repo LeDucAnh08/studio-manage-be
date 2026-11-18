@@ -12,7 +12,7 @@ import {
 import { withResourceTransaction, WorkflowProblem } from './workflowTransactions';
 import { ensureRentalAvailability } from './rentalAvailability';
 import { rentalPolicy, validateRentalServiceDates } from './rentalPolicy';
-import { rentalDays } from '../utils/rentalPeriod';
+import { rentalDays, vietnamDay } from '../utils/rentalPeriod';
 
 export const rentalNet = (order: any): number =>
   order.payments.reduce(
@@ -80,9 +80,30 @@ export function rentalPaymentSnapshot(amount: number, expiresAt: Date) {
   };
 }
 
-export function rentalPaymentDto(order: any) {
+// The two codes share an indexed order token while keeping deposit and balance distinct.
+export const rentalDepositReference = (reference: string) => reference.replace(/^RENB/, 'RENT');
+
+const rentalBalanceDeadline = (order: any) =>
+  new Date(+vietnamDay(order.quote.returnDate) + 24 * 60 * 60 * 1000);
+
+const balanceReviewPrefix = 'Thanh toán phần còn lại cần đối soát: ';
+const balanceNeedsReview = (order: any) =>
+  !!order.reservationIssue?.startsWith(balanceReviewPrefix);
+
+const canCollectRentalBalance = (order: any) =>
+  order.quote?.depositKind === 'advance' &&
+  order.status === 'confirmed' &&
+  !order.checkedOutAt &&
+  !['requested', 'proposed'].includes(order.change?.status) &&
+  !order.reservationIssue?.startsWith('Cần xử lý giao hàng: ') &&
+  !balanceNeedsReview(order) &&
+  rentalNet(order) >= order.quote.deposit;
+
+export function rentalPaymentDto(order: any, kind: 'deposit' | 'balance' = 'deposit') {
   const payment = order.depositPayment;
   if (!payment || !order.autoCheckout) return null;
+  const balance = kind === 'balance';
+  if (balance && (order.quote?.depositKind !== 'advance' || !order.quote.acceptedAt)) return null;
   let valid = false;
   try {
     const config = sepayConfig();
@@ -94,9 +115,19 @@ export function rentalPaymentDto(order: any) {
   } catch {
     /* Hide old QR when bank configuration is disabled or rotated. */
   }
-  const amount = Math.max(0, order.quote.deposit - rentalNet(order));
-  const status =
-    order.status === 'confirmed' || order.checkedOutAt
+  const target = balance ? rentalChargeTotal(order.quote) : order.quote.deposit;
+  const amount = Math.max(0, target - rentalNet(order));
+  const expiresAt = balance ? rentalBalanceDeadline(order) : order.reservation.expiresAt;
+  const reference = balance ? payment.reference.replace(/^RENT/, 'RENB') : payment.reference;
+  const status = balance
+    ? order.checkedOutAt || (order.status === 'confirmed' && amount === 0)
+      ? 'paid'
+      : !valid || !canCollectRentalBalance(order)
+        ? 'unavailable'
+        : +expiresAt > Date.now()
+          ? 'pending'
+          : 'expired'
+    : order.status === 'confirmed' || order.checkedOutAt
       ? 'paid'
       : !valid
         ? 'unavailable'
@@ -110,7 +141,7 @@ export function rentalPaymentDto(order: any) {
     acc: payment.accountNumber,
     bank: payment.bankCode,
     amount: String(amount),
-    des: payment.reference,
+    des: reference,
     template: 'qronly',
     holder: payment.accountName,
   });
@@ -119,14 +150,15 @@ export function rentalPaymentDto(order: any) {
     provider: 'sepay' as const,
     ...(sandboxUiEnabled() ? { demoSimulation: true } : {}),
     mode: payment.mode,
-    reference: payment.reference,
+    reference,
     bankName: payment.bankName,
     accountName: payment.accountName,
     accountNumber: payment.accountNumber,
     amount,
-    depositRequired: order.quote.deposit,
-    expiresAt: order.reservation.expiresAt,
+    depositRequired: target,
+    expiresAt,
     status,
+    ...(balance && balanceNeedsReview(order) ? { requiresReview: true } : {}),
     qrUrl: status === 'pending' ? qrUrl : null,
     downloadUrl: status === 'pending' ? `${qrUrl}&download=true` : null,
   };
@@ -319,20 +351,25 @@ export async function applyRentalReceipt(
   overrideOrderId?: string,
 ) {
   const matches = [
-    ...new Set<string>(receipt.content.toUpperCase().match(/\bRENT[A-F0-9]{16}\b/g) ?? []),
+    ...new Set<string>(receipt.content.toUpperCase().match(/\b(?:RENT|RENB)[A-F0-9]{16}\b/g) ?? []),
   ];
+  const reference = matches.length === 1 ? matches[0] : '';
+  const balance = reference.startsWith('RENB');
   const order: any = overrideOrderId
     ? await RentalOrder.findById(overrideOrderId).select('+depositPayment').session(session)
-    : matches.length === 1
-      ? await RentalOrder.findOne({ 'depositPayment.reference': matches[0] })
+    : reference
+      ? await RentalOrder.findOne({ 'depositPayment.reference': rentalDepositReference(reference) })
           .select('+depositPayment')
           .session(session)
       : null;
   if (!order && !overrideOrderId) return false;
   if (!order?.autoCheckout) throw new WorkflowProblem(409, 'Không tìm thấy đơn thuê tự động.');
-  receipt.rentalOrder = order._id;
   const payment = order.depositPayment;
+  if (balance && payment?.reference !== rentalDepositReference(reference))
+    throw new WorkflowProblem(409, 'Mã thanh toán phần còn lại thuộc đơn thuê khác.');
+  receipt.rentalOrder = order._id;
   let reason = '';
+  let reviewConfirmedRental = false;
   if (
     receipt.direction !== 'in' ||
     receipt.hasConflict ||
@@ -356,7 +393,23 @@ export async function applyRentalReceipt(
     reason = 'Thời điểm giao dịch không khớp đơn thuê.';
   else {
     order.paymentLockedAt = order.paymentLockedAt ?? new Date();
-    if (
+    reviewConfirmedRental = order.status === 'confirmed' && order.quote?.depositKind === 'advance';
+    if (balance && !overrideOrderId && !canCollectRentalBalance(order))
+      reason = 'Đơn chưa đủ điều kiện thu phần tiền thuê còn lại. Studio cần đối soát.';
+    else if (
+      balance &&
+      !overrideOrderId &&
+      +receipt.transactionDate >= +rentalBalanceDeadline(order)
+    )
+      reason = 'Tiền thuê về sau hạn thanh toán. Studio cần đối soát.';
+    else if (
+      balance &&
+      !overrideOrderId &&
+      receipt.amount > rentalChargeTotal(order.quote) - rentalNet(order)
+    )
+      reason = 'Số tiền vượt phần tiền thuê còn thiếu. Studio cần đối soát.';
+    else if (
+      (!balance || overrideOrderId) &&
       ![
         'awaiting_deposit',
         'expired',
@@ -365,7 +418,11 @@ export async function applyRentalReceipt(
       ].includes(order.status)
     )
       reason = 'Đơn không còn chờ cọc. Studio cần đối soát khoản tiền thêm.';
-    else if (!overrideOrderId && receipt.amount > order.quote.deposit - rentalNet(order))
+    else if (
+      !balance &&
+      !overrideOrderId &&
+      receipt.amount > order.quote.deposit - rentalNet(order)
+    )
       reason = 'Số tiền vượt cọc còn thiếu. Studio cần đối soát khoản tiền thêm.';
     else {
       expireRentalOrder(order);
@@ -378,7 +435,7 @@ export async function applyRentalReceipt(
       receipt.rentalPayment = await recordRentalMoney(
         order,
         {
-          kind: rentalNet(order) >= order.quote.deposit ? 'balance' : 'deposit',
+          kind: balance || rentalNet(order) >= order.quote.deposit ? 'balance' : 'deposit',
           amount: receipt.amount,
           method: 'bank_transfer',
           reference: receipt.bankReference || receipt.providerTransactionId,
@@ -410,7 +467,8 @@ export async function applyRentalReceipt(
   if (reason) {
     receipt.status = 'review';
     receipt.reason = reason;
-    order.reservationIssue = reason;
+    if (!order.reservationIssue?.startsWith('Cần xử lý giao hàng: ') && !balanceNeedsReview(order))
+      order.reservationIssue = reviewConfirmedRental ? balanceReviewPrefix + reason : reason;
   }
   order.version += 1;
   await order.save({ session });
