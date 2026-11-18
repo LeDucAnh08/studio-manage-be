@@ -6,6 +6,7 @@ import Schedule from '../models/Schedule';
 import Season from '../models/Season';
 import type { UpcomingScheduleDto } from '../types/dto';
 import { sendResponse } from '../utils/response';
+import { dashboardUsers } from '../services/dashboardUsers';
 
 const isPrivileged = (roles: number[]): boolean => roles.some((r) => r === 0 || r === 1);
 const isPhotographer = (roles: number[]): boolean => roles.includes(3);
@@ -75,7 +76,7 @@ export const getStats = async (req: Request, res: Response): Promise<void> => {
       }>;
     },
   ];
-  const [txFacetResult, customerCount] = await Promise.all([
+  const [txFacetResult, customerCount, users] = await Promise.all([
     Transaction.aggregate<TxFacetResult[0]>([
       { $match: { ...txFilter, date: dateRange } },
       {
@@ -106,6 +107,7 @@ export const getStats = async (req: Request, res: Response): Promise<void> => {
       },
     ]),
     Customer.countDocuments(customerFilter),
+    privileged ? dashboardUsers(now) : undefined,
   ]);
 
   const totalsRaw = txFacetResult[0]?.totals ?? [];
@@ -161,5 +163,6 @@ export const getStats = async (req: Request, res: Response): Promise<void> => {
     scheduleCount,
     showSchedules,
     upcomingSchedules,
+    ...(users ? { users } : {}),
   });
 };

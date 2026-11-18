@@ -7,6 +7,7 @@ interface JwtPayload {
 }
 
 export const protect = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+  res.setHeader('Cache-Control', 'no-store');
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
     res.status(401).json({ message: 'Not authenticated' });

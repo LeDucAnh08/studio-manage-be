@@ -5,6 +5,7 @@ const { test } = require('node:test');
 process.env.TS_NODE_PROJECT = path.join(__dirname, '../tsconfig.json');
 require('ts-node/register/transpile-only');
 const { emailConfig } = require('../src/services/email');
+const mongoose = require('mongoose');
 
 test('local Resend demo permits HTTP loopback only in development', () => {
   const saved = { ...process.env };
@@ -42,6 +43,67 @@ test('local Resend demo permits HTTP loopback only in development', () => {
       assert.equal(emailConfig().origin, 'https://studio.example');
     }
   } finally {
+    for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
+    Object.assign(process.env, saved);
+  }
+});
+
+test('real email with SePay Test requires explicit opt-in on the local development main database', () => {
+  const saved = { ...process.env };
+  const originalName = mongoose.connection.name, originalHost = mongoose.connection.host;
+  try {
+    Object.assign(process.env, {
+      EMAIL_ENABLED: 'true',
+      EMAIL_MODE: 'resend',
+      EMAIL_FROM: 'Yume Demo <onboarding@resend.dev>',
+      EMAIL_PUBLIC_URL: 'https://studio.example',
+      RESEND_API_KEY: 'config-check-placeholder',
+      JWT_SECRET: 'email-config-check-only-secret',
+      SEPAY_ENABLED: 'true',
+      SEPAY_MODE: 'sandbox',
+      SEPAY_TEST_ON_MAIN_DB: 'true',
+      NODE_ENV: 'development',
+    });
+    mongoose.connection.name = 'studio_db';
+    for (const host of ['localhost', '127.0.0.1', '::1', '[::1]']) {
+      mongoose.connection.host = host;
+      assert.equal(emailConfig().mode, 'resend');
+    }
+    for (const [key, values] of [
+      ['SEPAY_TEST_ON_MAIN_DB', ['false', '']],
+      ['NODE_ENV', ['production', 'test', '']],
+    ]) {
+      const original = process.env[key];
+      for (const value of values) {
+        process.env[key] = value;
+        assert.throws(() => emailConfig(), /Sandbox cannot send real email/);
+      }
+      process.env[key] = original;
+    }
+    for (const host of ['remote.example', '127.0.0.1.example', '']) {
+      mongoose.connection.host = host;
+      assert.throws(() => emailConfig(), /Sandbox cannot send real email/);
+    }
+    mongoose.connection.host = '127.0.0.1';
+    for (const database of ['studio_sepay_sandbox', 'studio_email_test', 'another_db', '']) {
+      mongoose.connection.name = database;
+      assert.throws(() => emailConfig(), /Sandbox cannot send real email/);
+    }
+    process.env.SEPAY_ENABLED = 'false';
+    for (const database of ['studio_sepay_sandbox', 'studio_email_test']) {
+      mongoose.connection.name = database;
+      assert.throws(() => emailConfig(), /Sandbox cannot send real email/);
+    }
+    mongoose.connection.name = 'studio_db';
+    process.env.SEPAY_ENABLED = 'true';
+    process.env.RESEND_API_KEY = '';
+    assert.throws(() => emailConfig(), /RESEND_API_KEY is missing/);
+    process.env.RESEND_API_KEY = 'config-check-placeholder';
+    process.env.EMAIL_MODE = 'test';
+    assert.throws(() => emailConfig(), /isolated/);
+  } finally {
+    mongoose.connection.name = originalName;
+    mongoose.connection.host = originalHost;
     for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
     Object.assign(process.env, saved);
   }

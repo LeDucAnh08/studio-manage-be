@@ -5,7 +5,7 @@ import User from '../models/User';
 import Booking from '../models/Booking';
 import ConceptOrder from '../models/ConceptOrder';
 import BookingWorkflow from '../models/BookingWorkflow';
-import { depositPaymentDto } from './depositPayment';
+import { depositPaymentDto, localProviderTestEnabled } from './depositPayment';
 
 export const emailHash = (value: string) => createHash('sha256').update(value).digest('hex');
 export function normalizeEmail(value: unknown): string | null {
@@ -50,7 +50,10 @@ export function emailConfig() {
     );
   if (
     mode === 'resend' &&
-    (isolated || (process.env.SEPAY_MODE === 'sandbox' && process.env.SEPAY_ENABLED === 'true'))
+    (isolated ||
+      (process.env.SEPAY_MODE === 'sandbox' &&
+        process.env.SEPAY_ENABLED === 'true' &&
+        !localProviderTestEnabled()))
   )
     throw new Error('Sandbox cannot send real email');
   const from = process.env.EMAIL_FROM || '';
@@ -91,14 +94,40 @@ const message = (
 export function verificationMessage(job: any) {
   const { origin, from, nonce, expiresAt } = job.payload;
   const token = verificationToken(String(job.user), job.to, nonce);
-  return message(
+  const href = `${origin}/account/verify-email#token=${token}`;
+  const deadline = new Date(expiresAt).toLocaleString('vi-VN', {
+    timeZone: 'Asia/Ho_Chi_Minh',
+  });
+  return {
     from,
-    job.to,
-    'Xác minh email nhận thông báo — Yume Studio',
-    `Vui lòng đăng nhập tài khoản đã yêu cầu và xác minh địa chỉ email để nhận thông báo về đơn chụp ảnh.\nĐường dẫn có hiệu lực đến ${new Date(expiresAt).toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' })}.\nNếu bạn không yêu cầu, hãy bỏ qua email này.`,
-    `${origin}/account/verify-email#token=${token}`,
-    'Xác minh email',
-  );
+    to: [job.to],
+    subject: 'Xác minh địa chỉ email của bạn — Yume Studio',
+    text: `Yume Studio\n\nXác minh địa chỉ email của bạn\n\nVui lòng xác minh ${job.to} để nhận thông báo và cập nhật về đơn chụp ảnh của bạn.\n\nXác minh email: ${href}\n\nĐăng nhập bằng đúng tài khoản đã yêu cầu, sau đó xác nhận trên website. Liên kết có hiệu lực đến ${deadline} (giờ Việt Nam) và chỉ dùng được một lần.\n\nNếu bạn không thực hiện yêu cầu này, hãy bỏ qua email.\n\nYume Studio`,
+    html: `<!doctype html>
+<html lang="vi">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Xác minh email — Yume Studio</title></head>
+<body style="margin:0;padding:0;background:#f7f7f7;color:#222222;font-family:Arial,Helvetica,sans-serif;">
+  <div style="display:none;max-height:0;overflow:hidden;">Xác minh email để nhận cập nhật về đơn chụp ảnh của bạn tại Yume Studio.</div>
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f7f7f7;">
+    <tr><td align="center" style="padding:32px 16px;">
+      <table role="presentation" width="560" cellspacing="0" cellpadding="0" style="width:100%;max-width:560px;">
+        <tr><td style="padding:0 0 24px;font-size:20px;font-weight:700;letter-spacing:-0.5px;">Yume Studio<span style="color:#ff385c;">.</span></td></tr>
+        <tr><td style="padding:32px;background:#ffffff;border:1px solid #ebebeb;border-radius:14px;">
+          <p style="margin:0 0 12px;color:#6a6a6a;font-size:12px;font-weight:700;letter-spacing:1.2px;">XÁC MINH EMAIL</p>
+          <h1 style="margin:0 0 20px;font-size:26px;line-height:1.3;letter-spacing:-0.5px;">Xác minh địa chỉ email của bạn</h1>
+          <p style="margin:0 0 16px;font-size:15px;line-height:1.7;">Cảm ơn bạn đã sử dụng Yume Studio. Vui lòng xác minh địa chỉ <strong style="overflow-wrap:anywhere;">${escapeHtml(job.to)}</strong> để nhận thông báo và cập nhật về đơn chụp ảnh của bạn.</p>
+          <table role="presentation" cellspacing="0" cellpadding="0" style="margin:24px 0;"><tr><td bgcolor="#ff385c" style="border-radius:8px;"><a href="${escapeHtml(href)}" style="display:inline-block;padding:15px 24px;color:#ffffff;font-size:15px;font-weight:700;text-decoration:none;border:1px solid #ff385c;border-radius:8px;">Xác minh email</a></td></tr></table>
+          <p style="margin:0 0 16px;font-size:14px;line-height:1.7;">Đăng nhập bằng đúng tài khoản đã yêu cầu, sau đó xác nhận trên website. Liên kết chỉ dùng được một lần và có hiệu lực đến <strong>${escapeHtml(deadline)}</strong> (giờ Việt Nam).</p>
+          <p style="margin:0;padding-top:20px;border-top:1px solid #ebebeb;color:#6a6a6a;font-size:13px;line-height:1.7;">Nếu nút không hoạt động, sao chép và mở liên kết sau trong trình duyệt:</p>
+          <p style="margin:8px 0 0;font-size:12px;line-height:1.7;word-break:break-all;"><a href="${escapeHtml(href)}" style="color:#6a6a6a;text-decoration:underline;">${escapeHtml(href)}</a></p>
+        </td></tr>
+        <tr><td style="padding:24px 0;color:#6a6a6a;font-size:12px;line-height:1.7;">Nếu bạn không thực hiện yêu cầu này, hãy bỏ qua email.<br>Đây là email tự động từ Yume Studio, vui lòng không trả lời.</td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`,
+  };
 }
 
 export async function enqueueDepositEmail(booking: any, workflow: any, session: ClientSession) {

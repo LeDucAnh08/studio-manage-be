@@ -1,4 +1,6 @@
 import { Request, Response } from 'express';
+import { isValidObjectId } from 'mongoose';
+import { publicFeedbackError } from '../utils/publicFormValidation';
 import Feedback from '../models/Feedback';
 import type { FeedbackResponse } from '../types/dto';
 import { sendResponse } from '../utils/response';
@@ -62,7 +64,17 @@ export const remove = async (req: Request, res: Response): Promise<void> => {
 export const submit = async (req: Request, res: Response): Promise<void> => {
   const { customer, access, phone, crewFeedback, albumFeedback, content, suggestion } = req.body;
 
+  const inputError = publicFeedbackError(req.body);
+  if (inputError) {
+    sendResponse(res, 400, false, inputError);
+    return;
+  }
+
   if (customer) {
+    if (typeof customer !== 'string' || !isValidObjectId(customer)) {
+      sendResponse(res, 404, false, 'Không tìm thấy form hoặc link không hợp lệ');
+      return;
+    }
     const matchedCustomer = await Customer.findById(customer).select('+publicAccessToken');
     if (!matchedCustomer?.publicAccessToken || matchedCustomer.publicAccessToken !== access) {
       sendResponse(res, 404, false, 'Không tìm thấy form hoặc link không hợp lệ');
@@ -88,7 +100,7 @@ export const submit = async (req: Request, res: Response): Promise<void> => {
 
   const feedback = await Feedback.create({
     customer: customer || undefined,
-    phone,
+    phone: typeof phone === 'string' ? phone.trim().replace(/[ ().-]/g, '') : undefined,
     crewFeedback: {
       rating: crewRating,
       description: crewFeedback.description.trim(),

@@ -53,7 +53,7 @@ export const conceptHandler = (fn: (req: any, res: any) => Promise<void>) =>
     }
   });
 const router = Router();
-router.use(conceptGate);
+router.use(conceptGate, protect);
 router.use(createRateLimit({ limit: 120, windowMs: 60000, message: 'Thử lại sau một phút.' }));
 router.get(
   '/photographers/:id',
@@ -132,7 +132,6 @@ router.get(
     );
   }),
 );
-router.use(protect);
 router.use((req, res, next) => {
   if (!admin(req.user)) {
     sendResponse(res, 403, false, 'Chỉ quản trị được sửa danh mục.');

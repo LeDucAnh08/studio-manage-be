@@ -241,7 +241,7 @@ router.post(
   }),
 );
 export const publicConceptAlbums = Router();
-publicConceptAlbums.use(conceptGate);
+publicConceptAlbums.use(conceptGate, protect);
 publicConceptAlbums.use(createRateLimit({ limit: 300, windowMs: 60000, message: 'Thử lại sau.' }));
 publicConceptAlbums.get(
   '/:publicId',

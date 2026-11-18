@@ -17,8 +17,31 @@ import { asyncHandler } from '../middleware/asyncHandler';
 import { getPublicPackage, validatePackageId } from '../controllers/packageContentController';
 import { publicAlbumRoutes } from './bookingAlbum';
 import { rentalPolicy } from '../services/rentalPolicy';
+import { publicStudentError } from '../utils/publicFormValidation';
+import { protect } from '../middleware/auth';
 
 const router = Router();
+router.get(
+  '/portfolio-stats',
+  asyncHandler(async (_req, res) => {
+    const [classes, schools] = await Promise.all([
+      Customer.countDocuments(),
+      Customer.distinct('school'),
+    ]);
+    sendResponse(res, 200, true, 'OK', {
+      classes,
+      schools: new Set(
+        schools
+          .filter((school): school is string => typeof school === 'string')
+          .map((school) => school.trim())
+          .filter(Boolean),
+      ).size,
+    });
+  }),
+);
+// Portfolio statistics are the only anonymous data endpoint. Link tokens remain
+// an additional permission check after account authentication.
+router.use(protect);
 router.get(
   '/rental-policy',
   asyncHandler(async (_req, res) => {
@@ -28,19 +51,19 @@ router.get(
 router.use('/albums/:publicId', publicAlbumRoutes);
 
 const hasCustomerAccess = async (customerId: string, access: unknown): Promise<boolean> => {
-  if (typeof access !== 'string' || !access) return false;
+  if (!isValidObjectId(customerId) || typeof access !== 'string' || !access) return false;
   const customer = await Customer.findOne({ _id: customerId }).select('+publicAccessToken');
   return !!customer?.publicAccessToken && customer.publicAccessToken === access;
 };
 
-// Submit feedback (public, no auth)
-router.post('/feedback', feedbackController.submit);
+// Customer-facing feedback; an active account session is required above.
+router.post('/feedback', asyncHandler(feedbackController.submit));
 router.get('/member-intake/:token', (req, res, next) =>
   getPublicMemberIntake(req, res).catch(next),
 );
 router.post('/member-intake/:token', (req, res, next) => submitPublicMember(req, res).catch(next));
 
-// List packages (public, used by portfolio pricing section)
+// Customer package browsing after sign-in.
 router.get('/packages/:id', validatePackageId, asyncHandler(getPublicPackage));
 router.get('/packages', async (_req: Request, res: Response): Promise<void> => {
   const packages = await Package.find({})
@@ -128,23 +151,44 @@ router.get('/students', async (req: Request, res: Response): Promise<void> => {
 });
 
 // Submit student info (public)
-router.post('/students', async (req: Request, res: Response): Promise<void> => {
-  const { customer, access, name, gender, height, weight, notes, costumes } = req.body;
-  if (!customer || !name || !gender || !(await hasCustomerAccess(customer, access))) {
-    sendResponse(res, 400, false, 'customer, name và gender là bắt buộc');
-    return;
-  }
-  const student = await Student.create({
-    customer,
-    name,
-    gender,
-    height,
-    weight,
-    notes,
-    costumes: Array.isArray(costumes) ? costumes : [],
-  });
-  sendResponse(res, 201, true, 'Tạo học sinh thành công', student);
-});
+router.post(
+  '/students',
+  asyncHandler(async (req: Request, res: Response): Promise<void> => {
+    const { customer, access, name, gender, height, weight, notes, costumes } = req.body;
+    if (!customer || !name || !gender || !(await hasCustomerAccess(customer, access))) {
+      sendResponse(res, 400, false, 'Thiếu thông tin bắt buộc hoặc liên kết lớp không hợp lệ.');
+      return;
+    }
+    const inputError = publicStudentError(req.body);
+    if (inputError) {
+      sendResponse(res, 400, false, inputError);
+      return;
+    }
+    if (Array.isArray(costumes) && costumes.length) {
+      const schedule = await Schedule.findOne({ customer }).select('costumes').lean();
+      const allowed = new Set((schedule?.costumes || []).map(String));
+      if (costumes.some((id: string) => !allowed.has(id))) {
+        sendResponse(
+          res,
+          400,
+          false,
+          'Chỉ chọn trang phục trong gói của lớp. Vui lòng tải lại biểu mẫu.',
+        );
+        return;
+      }
+    }
+    const student = await Student.create({
+      customer,
+      name: name.trim(),
+      gender,
+      height,
+      weight,
+      notes: typeof notes === 'string' ? notes.trim() : undefined,
+      costumes: Array.isArray(costumes) ? costumes : [],
+    });
+    sendResponse(res, 201, true, 'Tạo học sinh thành công', student);
+  }),
+);
 
 // Get shoot schedule by class (public, minimal fields)
 router.get('/schedules/customer/:customer', async (req: Request, res: Response): Promise<void> => {

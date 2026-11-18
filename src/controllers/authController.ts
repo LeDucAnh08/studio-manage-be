@@ -19,6 +19,15 @@ export const registerClient = async (req: Request, res: Response): Promise<void>
     sendResponse(res, 400, false, 'Nhập địa chỉ email hợp lệ.');
     return;
   }
+  if (!normalizedName) {
+    sendResponse(
+      res,
+      400,
+      false,
+      'Họ tên phải có từ 1 đến 100 ký tự và không chỉ gồm khoảng trắng.',
+    );
+    return;
+  }
   if (
     !normalizedUsername ||
     !normalizedName ||

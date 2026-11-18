@@ -18,6 +18,12 @@ export interface DepositPaymentSnapshot {
 }
 
 export const sepayEnabled = () => process.env.SEPAY_ENABLED === 'true';
+// Provider Test on the existing local database is distinct from an isolated sandbox.
+export const localProviderTestEnabled = () =>
+  process.env.SEPAY_TEST_ON_MAIN_DB === 'true' &&
+  process.env.NODE_ENV === 'development' &&
+  mongoose.connection.name === 'studio_db' &&
+  ['localhost', '127.0.0.1', '::1', '[::1]'].includes(mongoose.connection.host || '');
 export const sandboxUiEnabled = () =>
   process.env.SEPAY_DEMO_UI === 'true' &&
   process.env.NODE_ENV === 'development' &&
@@ -41,13 +47,6 @@ export function sepayConfig() {
     accountNumber: process.env.PAYMENT_ACCOUNT_NUMBER?.trim() ?? '',
     accountName: process.env.PAYMENT_ACCOUNT_NAME?.trim() ?? '',
   };
-  // Explicit local provider Test mode keeps the user's existing catalog/database.
-  // The internal payment simulator still requires its isolated sandbox database.
-  const localProviderTest =
-    process.env.SEPAY_TEST_ON_MAIN_DB === 'true' &&
-    process.env.NODE_ENV === 'development' &&
-    mongoose.connection.name === 'studio_db' &&
-    ['localhost', '127.0.0.1', '::1', '[::1]'].includes(mongoose.connection.host || '');
   if (
     !sepayEnabled() ||
     process.env.CLIENT_WORKFLOW_ENABLED?.toLowerCase() !== 'true' ||
@@ -61,7 +60,7 @@ export function sepayConfig() {
   }
   if (
     mode === 'sandbox' &&
-    !localProviderTest &&
+    !localProviderTestEnabled() &&
     (!process.env.SEPAY_SANDBOX_DATABASE?.startsWith('studio_sepay_') ||
       mongoose.connection.name !== process.env.SEPAY_SANDBOX_DATABASE)
   )

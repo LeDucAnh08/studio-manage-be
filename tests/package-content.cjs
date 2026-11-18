@@ -121,6 +121,10 @@ test('public details, editor authorization and image updates remain consistent o
     server.close();
   });
   const base = `http://127.0.0.1:${server.address().port}`;
+  const viewPackage = (packageId) =>
+    fetch(`${base}/api/public/packages/${packageId}`, {
+      headers: { Authorization: `Bearer ${token(6)}` },
+    });
   const put = (details = {}, files = [], version = pkg.detailsVersion, role = 0) => {
     const body = new FormData();
     body.set('content', JSON.stringify({ version, details }));
@@ -133,14 +137,12 @@ test('public details, editor authorization and image updates remain consistent o
     });
   };
   await t.test(
-    'public viewing needs no login and handles invalid or missing packages',
+    'package viewing requires login and handles invalid or missing packages',
     async () => {
-      assert.equal((await fetch(`${base}/api/public/packages/${id}`)).status, 200);
-      assert.equal((await fetch(`${base}/api/public/packages/not-an-id`)).status, 400);
-      assert.equal(
-        (await fetch(`${base}/api/public/packages/000000000000000000000099`)).status,
-        404,
-      );
+      assert.equal((await fetch(`${base}/api/public/packages/${id}`)).status, 401);
+      assert.equal((await viewPackage(id)).status, 200);
+      assert.equal((await viewPackage('not-an-id')).status, 400);
+      assert.equal((await viewPackage('000000000000000000000099')).status, 404);
     },
   );
   await t.test(
@@ -169,7 +171,7 @@ test('public details, editor authorization and image updates remain consistent o
       const saved = await put(details);
       assert.equal(saved.status, 200);
       const savedPackage = (await saved.json()).data;
-      const publicPackage = (await (await fetch(`${base}/api/public/packages/${id}`)).json()).data;
+      const publicPackage = (await (await viewPackage(id)).json()).data;
       for (const [key, value] of Object.entries(details)) {
         assert.equal(savedPackage.details[key], value);
         assert.equal(publicPackage.details[key], value);
