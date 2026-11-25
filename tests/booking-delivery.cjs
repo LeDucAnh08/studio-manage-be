@@ -34,8 +34,8 @@ test('private edited photo uploads, versioned delivery and customer feedback', a
   await mongoose.connection.dropDatabase();
   await Photo.createIndexes();
   await fs.mkdir(directory, { recursive: true });
-  const [admin, photographer, client, other, outsider, accountant] = await User.create(
-    [0, 3, 6, 6, 3, 5].map((role, index) => ({
+  const [admin, photographer, client, other, outsider, financeAdmin] = await User.create(
+    [0, 3, 6, 6, 3, 1].map((role, index) => ({
       username: `delivery.${index}`,
       name: `Actor ${index}`,
       roles: [role],
@@ -185,7 +185,7 @@ test('private edited photo uploads, versioned delivery and customer feedback', a
     'only assigned studio staff upload; bytes are decoded and normalized privately',
     async () => {
       id = await make();
-      for (const actor of [null, client, other, outsider, accountant])
+      for (const actor of [null, client, other, outsider])
         assert.ok([401, 403, 404].includes((await upload(id, actor)).status));
       assert.equal(
         (await upload(id, photographer, Buffer.from('<svg><script>alert(1)</script></svg>')))
@@ -244,7 +244,7 @@ test('private edited photo uploads, versioned delivery and customer feedback', a
   await t.test(
     'published images remain owner-private, including thumbnail and history',
     async () => {
-      for (const actor of [null, other, outsider, accountant])
+      for (const actor of [null, other, outsider])
         assert.ok(
           [401, 403, 404].includes(
             (await call(`/bookings/${id}/delivery/photos/${first.id}`, actor)).status,
@@ -396,7 +396,7 @@ test('private edited photo uploads, versioned delivery and customer feedback', a
         const photo = await uploadOk(booking);
         assert.equal((await publish(booking, [photo.id])).status, 200);
         const pay = () =>
-          action(booking, accountant, 'payment.record', {
+          action(booking, financeAdmin, 'payment.record', {
             kind: 'balance',
             amount: 150,
             method: 'cash',

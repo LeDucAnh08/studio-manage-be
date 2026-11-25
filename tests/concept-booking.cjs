@@ -105,10 +105,10 @@ test('concept HTTP, shared resources, SePay, operations and Drive album', async 
     ['photo', 3],
     ['photo2', 3],
     ['sale', 2],
-    ['account', 5],
+    ['account', 1],
     ['unverified', 6],
   ]) {
-    actors[key] = await User.create({
+    const input = {
       username: 'concept.' + key,
       name: key,
       password: 'TestOnly123!',
@@ -116,7 +116,11 @@ test('concept HTTP, shared resources, SePay, operations and Drive album', async 
       email: `${key}@example.com`,
       ...(key !== 'unverified' ? { emailVerifiedAt: new Date() } : {}),
       isActive: true,
-    });
+    };
+    if (role === 2) {
+      actors[key] = new User(input);
+      await User.collection.insertOne(actors[key].toObject());
+    } else actors[key] = await User.create(input);
   }
   const concept = await Concept.create({ name: 'Nàng thơ', description: 'Concept test' });
   const type = await CostumeType.create({ name: 'Áo dài' });
@@ -322,7 +326,7 @@ test('concept HTTP, shared resources, SePay, operations and Drive album', async 
   };
   let first;
   await t.test(
-    'concept detail content is public, validated and preserved on legacy edits',
+    'concept detail content is authenticated, validated and preserved on legacy edits',
     async () => {
       const input = {
         id: String(concept._id),
@@ -340,7 +344,7 @@ test('concept HTTP, shared resources, SePay, operations and Drive album', async 
       };
       assert.equal((await request('POST', '/concepts/concept', 'client', input)).status, 403);
       assert.equal((await request('POST', '/concepts/concept', 'admin', input)).status, 200);
-      let publicCatalog = (await request('GET', '/concepts', null)).body.data;
+      let publicCatalog = (await request('GET', '/concepts', 'client')).body.data;
       let saved = publicCatalog.concepts.find((item) => String(item._id) === String(concept._id));
       assert.equal(saved.story, input.story);
       assert.equal(saved.gallery[0].url, input.gallery[0].url);
@@ -371,7 +375,7 @@ test('concept HTTP, shared resources, SePay, operations and Drive album', async 
         ).status,
         400,
       );
-      publicCatalog = (await request('GET', '/concepts', null)).body.data;
+      publicCatalog = (await request('GET', '/concepts', 'client')).body.data;
       saved = publicCatalog.concepts.find((item) => String(item._id) === input.id);
       assert.equal(saved.story, input.story);
       assert.equal(saved.gallery.length, 1);
@@ -379,13 +383,14 @@ test('concept HTTP, shared resources, SePay, operations and Drive album', async 
   );
 
   await t.test('catalog management, public profiles, verified email and empty days', async () => {
-    assert.equal((await request('GET', '/concepts', '')).status, 200);
+    assert.equal((await request('GET', '/concepts', '')).status, 401);
+    assert.equal((await request('GET', '/concepts', 'client')).status, 200);
     assert.equal((await request('GET', '/concepts/manage', 'client')).status, 403);
     assert.equal((await request('POST', '/concept-orders', 'unverified', body())).status, 403);
     const r = await request(
       'GET',
       `/concepts/availability?packageId=${pkg._id}&day=${future().slice(0, 10)}`,
-      '',
+      'client',
     );
     assert.equal(r.status, 200);
     assert.ok(r.body.data.slots.length);
@@ -479,7 +484,7 @@ test('concept HTTP, shared resources, SePay, operations and Drive album', async 
       );
       baseProfile.revision += 1;
       const url = `/concepts/photographers/${actors.photo._id}`;
-      let result = await request('GET', url, '');
+      let result = await request('GET', url, 'client');
       assert.equal(result.status, 200);
       for (const [field, value] of Object.entries(content))
         assert.deepEqual(result.body.data[field], value);
@@ -488,7 +493,7 @@ test('concept HTTP, shared resources, SePay, operations and Drive album', async 
         assert.equal(privateField in result.body.data, false);
       assert.equal((await request('POST', '/concepts/profile', 'admin', baseProfile)).status, 200);
       baseProfile.revision += 1;
-      result = await request('GET', url, '');
+      result = await request('GET', url, 'client');
       for (const [field, value] of Object.entries(content))
         assert.deepEqual(result.body.data[field], value);
       for (const invalid of [
@@ -521,18 +526,21 @@ test('concept HTTP, shared resources, SePay, operations and Drive album', async 
           },
         },
       );
-      result = await request('GET', url, '');
+      result = await request('GET', url, 'client');
       assert.equal(result.body.data.portfolio.length, 1);
       assert.equal(result.body.data.concepts.length, 1);
       await Profile.updateOne({ _id: doc._id }, { $set: { published: false } });
-      assert.equal((await request('GET', url, '')).status, 404);
+      assert.equal((await request('GET', url, 'client')).status, 404);
       await Profile.updateOne({ _id: doc._id }, { $set: { published: true } });
       await User.updateOne({ _id: actors.photo._id }, { $set: { isActive: false } });
-      assert.equal((await request('GET', url, '')).status, 404);
+      assert.equal((await request('GET', url, 'client')).status, 404);
       await User.updateOne({ _id: actors.photo._id }, { $set: { isActive: true } });
-      assert.equal((await request('GET', '/concepts/photographers/invalid-id', '')).status, 400);
       assert.equal(
-        (await request('GET', `/concepts/photographers/${actors.client._id}`, '')).status,
+        (await request('GET', '/concepts/photographers/invalid-id', 'client')).status,
+        400,
+      );
+      assert.equal(
+        (await request('GET', `/concepts/photographers/${actors.client._id}`, 'client')).status,
         404,
       );
     },
@@ -577,7 +585,7 @@ test('concept HTTP, shared resources, SePay, operations and Drive album', async 
     assert.equal((await request('POST', '/concepts/package', 'client', input)).status, 403);
     assert.equal((await request('POST', '/concepts/package', 'admin', input)).status, 200);
     let saved = await Package.findOne({ name: input.name }).lean();
-    const catalog = (await request('GET', '/concepts', null)).body.data;
+    const catalog = (await request('GET', '/concepts', 'client')).body.data;
     assert.deepEqual(
       catalog.packages.find((row) => String(row._id) === String(saved._id)).decor,
       decor,
@@ -856,7 +864,7 @@ test('concept HTTP, shared resources, SePay, operations and Drive album', async 
     assert.equal(
       (await command(first._id, 'refund', { amount: 100000, reference: 'refund-1' }, 'sale'))
         .status,
-      403,
+      401,
     );
     const refunded = await command(
       first._id,
@@ -986,17 +994,33 @@ test('concept HTTP, shared resources, SePay, operations and Drive album', async 
       let a = await deliver();
       const share = await albumCommand(albumOrder._id, 'share', {}, 'admin');
       assert.equal(share.status, 200);
-      const token = share.body.data.token,
+      const shareToken = share.body.data.token,
         pub = share.body.data.share.publicId;
+      assert.equal(
+        (
+          await realFetch(`${base}/public/concept-albums/${pub}`, {
+            headers: { 'X-Album-Token': shareToken },
+          })
+        ).status,
+        401,
+      );
+      assert.equal(
+        (
+          await realFetch(`${base}/public/concept-albums/${pub}`, {
+            headers: { Authorization: `Bearer ${token('client')}` },
+          })
+        ).status,
+        404,
+      );
       const guest = await realFetch(`${base}/public/concept-albums/${pub}`, {
-        headers: { 'X-Album-Token': token },
+        headers: { 'X-Album-Token': shareToken, Authorization: `Bearer ${token('client')}` },
       });
       assert.equal(guest.status, 200);
       const body = await guest.json();
       assert.equal(body.data.feedbackRounds, undefined);
       assert.equal(body.data.allowDownload, false);
       assert.equal(
-        (await request('POST', `/public/concept-albums/${pub}/photo`, '', {})).status,
+        (await request('POST', `/public/concept-albums/${pub}/photo`, 'client', {})).status,
         404,
       );
       const photo = a.photos.find((p) => p.version === 1);
@@ -1017,7 +1041,7 @@ test('concept HTTP, shared resources, SePay, operations and Drive album', async 
       assert.equal(
         (
           await realFetch(`${base}/public/concept-albums/${pub}`, {
-            headers: { 'X-Album-Token': token },
+            headers: { 'X-Album-Token': shareToken, Authorization: `Bearer ${token('client')}` },
           })
         ).status,
         404,

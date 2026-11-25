@@ -12,13 +12,8 @@ import { asyncHandler } from '../middleware/asyncHandler';
 const router = Router();
 router.use(protect);
 
-router.get('/', requireRole(0, 1, 2, 4), asyncHandler(packageController.getAll));
-router.get(
-  '/:id',
-  requireRole(0, 1, 2, 4),
-  validatePackageId,
-  asyncHandler(packageController.getOne),
-);
+router.get('/', requireRole(0, 1), asyncHandler(packageController.getAll));
+router.get('/:id', requireRole(0, 1), validatePackageId, asyncHandler(packageController.getOne));
 router.use(requireRole(0, 1));
 
 router.put(

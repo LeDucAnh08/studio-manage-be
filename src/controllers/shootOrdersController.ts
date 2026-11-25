@@ -17,13 +17,13 @@ import { conceptShootStageExpression } from './photographerOrdersController';
 export function shootOrdersScope(actor: NonNullable<Request['user']>) {
   const has = (role: number) => actor.roles.includes(role as never);
   const admin = has(0) || has(1);
-  const personal = has(3) && ![0, 1, 2, 4].some(has);
+  const personal = has(3) && ![0, 1].some(has);
   return {
-    yearbook: admin || has(5) || has(3),
-    yearbookAll: !personal && (admin || has(5)),
-    concept: admin || has(2) || has(5) || has(3),
-    conceptAll: !personal && (admin || has(2) || has(5)),
-    finance: !personal && (admin || has(5)),
+    yearbook: admin || has(3),
+    yearbookAll: admin,
+    concept: admin || has(3),
+    conceptAll: admin,
+    finance: admin,
   };
 }
 

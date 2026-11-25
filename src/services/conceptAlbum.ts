@@ -89,13 +89,21 @@ const requireStaff = (order: any, actor: any) => {
 const requireOwner = (order: any, actor: any) => {
   if (!owner(order, actor)) throw new WorkflowProblem(403, 'Chỉ chủ đơn được thao tác.');
 };
-export async function albumCommand(id: string, actor: any, operation: string, b: any, key: string) {
+export async function albumCommand(
+  id: string,
+  actor: any,
+  operation: string,
+  b: any,
+  key: string,
+  suppliedSource?: Awaited<ReturnType<typeof listDriveFolders>>,
+  beforeCommit?: (session: ClientSession) => Promise<void>,
+) {
   commandKey(key);
-  let source: Awaited<ReturnType<typeof listDriveFolders>> | undefined;
+  let source = suppliedSource;
   if (['sync', 'deliver'].includes(operation)) {
     const order = await accessOrder(id, actor);
     requireStaff(order, actor);
-    source = await listDriveFolders(b.folders);
+    source ||= await listDriveFolders(b.folders);
     if (!source.images.length || source.images.length > 500)
       throw new WorkflowProblem(400, 'Mỗi bộ ảnh cần từ 1 đến 500 ảnh.');
   }
@@ -108,6 +116,7 @@ export async function albumCommand(id: string, actor: any, operation: string, b:
       .digest('base64url');
   }
   return withResourceTransaction(async (session) => {
+    await beforeCommit?.(session);
     const order = await accessOrder(id, actor, session);
     if (!['shot', 'completed'].includes(order.status))
       throw new WorkflowProblem(409, 'Buổi chụp chưa hoàn tất.');

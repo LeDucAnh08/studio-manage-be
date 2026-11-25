@@ -6,7 +6,7 @@ import path from 'path';
 import Schedule from '../models/Schedule';
 import Customer from '../models/Customer';
 import type { ICustomer } from '../models/Customer';
-import type { IUser } from '../models/User';
+import User, { type IUser } from '../models/User';
 import type { ISeason } from '../models/Season';
 import type { ScheduleResponse } from '../types/dto';
 import { notifyUsers } from '../services/telegramService';
@@ -230,8 +230,17 @@ const sendScheduleProblem = (res: Response, error: unknown): void => {
   sendResponse(res, problem.status ?? 500, false, problem.message ?? 'Internal server error');
 };
 
+const validCoordinator = async (value: unknown, existing?: unknown, session?: ClientSession) => {
+  if (value === undefined || value === null || value === '') return true;
+  if (typeof value !== 'string' || !Types.ObjectId.isValid(value)) return false;
+  if (existing && value === String(existing)) return true;
+  return !!(await User.exists({ _id: value, roles: { $in: [0, 1] }, isActive: true }).session(
+    session ?? null,
+  ));
+};
+
 const photographerReadScope = (req: Request): Record<string, unknown> =>
-  req.user!.roles.includes(3) && !req.user!.roles.some((role) => [0, 1, 2, 4].includes(role))
+  req.user!.roles.includes(3) && !req.user!.roles.some((role) => [0, 1].includes(role))
     ? { $or: [{ leadPhotographer: req.user!._id }, { supportPhotographers: req.user!._id }] }
     : {};
 
@@ -368,6 +377,11 @@ export const create = async (req: Request, res: Response): Promise<void> => {
     return;
   }
   const payload = { ...req.body };
+  if (payload.bookedBy === '') payload.bookedBy = null;
+  if (!(await validCoordinator(payload.bookedBy))) {
+    sendResponse(res, 400, false, 'Người phụ trách phải là tài khoản quản trị đang hoạt động.');
+    return;
+  }
   delete payload._id;
   delete payload.__v;
   delete payload.createdAt;
@@ -491,6 +505,7 @@ export const update = async (req: Request, res: Response): Promise<void> => {
     return;
   }
   const updateData = { ...req.body };
+  if (updateData.bookedBy === '') updateData.bookedBy = null;
   delete updateData._id;
   delete updateData.__v;
   delete updateData.createdAt;
@@ -516,6 +531,12 @@ export const update = async (req: Request, res: Response): Promise<void> => {
     const existing = await existingQuery;
     if (!existing) throw new WorkflowProblem(404, 'Not found');
     prevSchedule = existing.toObject();
+    if (
+      'bookedBy' in updateData &&
+      !(await validCoordinator(updateData.bookedBy, existing.bookedBy, session))
+    ) {
+      throw new WorkflowProblem(400, 'Người phụ trách phải là tài khoản quản trị đang hoạt động.');
+    }
     if (
       (existing.workflowBooking || existing.conceptOrder) &&
       resourceFields.some((field) => field in updateData)

@@ -6,6 +6,7 @@ import Booking from '../models/Booking';
 import ConceptOrder from '../models/ConceptOrder';
 import BookingWorkflow from '../models/BookingWorkflow';
 import { depositPaymentDto, localProviderTestEnabled } from './depositPayment';
+import { backgroundJobsEnabled } from '../config/queue';
 
 export const emailHash = (value: string) => createHash('sha256').update(value).digest('hex');
 export function normalizeEmail(value: unknown): string | null {
@@ -212,167 +213,186 @@ export async function enqueuePendingDepositEmails(userId: string, session: Clien
 }
 
 const RETRY_WINDOW_MS = 23 * 60 * 60 * 1000;
+export async function processOneEmailOutbox(
+  id?: string,
+  transport?: (payload: Record<string, any>, key: string) => Promise<string>,
+  beforeSend?: () => Promise<void>,
+) {
+  const config = emailConfig();
+  if (!config) return 'idle' as const;
+  const leaseToken = randomUUID(),
+    now = new Date();
+  const job: any = await EmailOutbox.findOneAndUpdate(
+    {
+      ...(id ? { _id: id } : {}),
+      mode: config.mode,
+      $or: [
+        { status: 'pending', nextAttemptAt: { $lte: now } },
+        { status: 'sending', lockedUntil: { $lte: now } },
+      ],
+    },
+    {
+      $set: { status: 'sending', leaseToken, lockedUntil: new Date(+now + 60000) },
+      $inc: { attempts: 1 },
+    },
+    { new: true, sort: { nextAttemptAt: 1, _id: 1 } },
+  ).select('+payload +leaseToken');
+  if (!job) return 'idle' as const;
+  const owned = { _id: job._id, leaseToken, status: 'sending' };
+  const finish = (status: string, extra: Record<string, unknown> = {}) =>
+    EmailOutbox.updateOne(owned, {
+      $set: { status, ...extra },
+      $unset: { leaseToken: 1, lockedUntil: 1 },
+    });
+  const skip = (reason: string) =>
+    finish(job.deliveryUncertain ? 'delivery_unknown' : 'skipped', { lastError: reason });
+  if (job.attempts > 10) {
+    await finish(job.deliveryUncertain ? 'delivery_unknown' : 'failed', {
+      lastError: 'email_attempts_exhausted',
+    });
+    return 'handled' as const;
+  }
+  if (job.firstAttemptAt && +now - +job.firstAttemptAt >= RETRY_WINDOW_MS) {
+    await finish('delivery_unknown', { lastError: 'delivery_unknown_retry_window_expired' });
+    return 'handled' as const;
+  }
+  let attempted = false;
+  try {
+    const user = await User.findOne({ _id: job.user, isActive: true, email: job.to }).select(
+      '+emailVerification',
+    );
+    if (!user) {
+      await skip('recipient_changed_or_inactive');
+      return 'handled' as const;
+    }
+    if (job.kind === 'verify_email') {
+      const hash = emailHash(verificationToken(String(job.user), job.to, job.payload.nonce));
+      if (
+        user.emailVerifiedAt ||
+        user.emailVerification?.tokenHash !== hash ||
+        !user.emailVerification ||
+        user.emailVerification.expiresAt <= new Date()
+      ) {
+        await skip('verification_superseded_or_expired');
+        return 'handled' as const;
+      }
+    } else if (job.kind === 'concept_update') {
+      if (
+        !user.emailVerifiedAt ||
+        !(await ConceptOrder.exists({ _id: job.conceptOrder, client: user._id }))
+      ) {
+        await skip('concept_recipient_invalid');
+        return 'handled' as const;
+      }
+    } else {
+      if (!user.emailVerifiedAt) {
+        await skip('recipient_unverified');
+        return 'handled' as const;
+      }
+      const booking = await Booking.findById(job.booking);
+      const workflow = await BookingWorkflow.findOne({ booking: job.booking });
+      const payment = booking && depositPaymentDto(booking, workflow);
+      if (
+        !user.emailVerifiedAt ||
+        !booking ||
+        String(booking.client) !== String(job.user) ||
+        payment?.status !== 'pending' ||
+        payment.reference !== job.paymentReference
+      ) {
+        await skip('deposit_no_longer_pending');
+        return 'handled' as const;
+      }
+    }
+    const payload = job.kind === 'verify_email' ? verificationMessage(job) : job.payload;
+    const stamp = await EmailOutbox.updateOne(owned, {
+      $set: {
+        ...(!job.firstAttemptAt ? { firstAttemptAt: new Date() } : {}),
+        deliveryUncertain: true,
+      },
+    });
+    if (!stamp.matchedCount) return 'handled' as const;
+    const dispatch = await EmailOutbox.findOne(owned).select('lockedUntil firstAttemptAt');
+    if (!dispatch || !dispatch.lockedUntil || +dispatch.lockedUntil <= Date.now())
+      return 'handled' as const;
+    if (dispatch.firstAttemptAt && Date.now() - +dispatch.firstAttemptAt >= RETRY_WINDOW_MS) {
+      await finish('delivery_unknown', { lastError: 'delivery_unknown_retry_window_expired' });
+      return 'handled' as const;
+    }
+    await beforeSend?.();
+    attempted = true;
+    if (transport || config.mode === 'test') {
+      const providerId = transport ? await transport(payload, job.dedupeKey) : `test-${job._id}`;
+      await finish('sent', {
+        sentAt: new Date(),
+        providerId,
+        testMessage: payload,
+        lastError: '',
+        deliveryUncertain: false,
+      });
+    } else {
+      const response = await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${config.apiKey}`,
+          'Content-Type': 'application/json',
+          'Idempotency-Key': job.dedupeKey,
+        },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!response.ok) {
+        const error = new Error(`resend_http_${response.status}`) as Error & {
+          permanent?: boolean;
+          definitive?: boolean;
+        };
+        error.permanent = response.status < 500 && ![408, 409, 429].includes(response.status);
+        error.definitive = response.status < 500 && ![408, 409].includes(response.status);
+        throw error;
+      }
+      const body = (await response.json()) as { id?: string };
+      if (!body.id) throw new Error('resend_missing_message_id');
+      await finish('sent', {
+        sentAt: new Date(),
+        providerId: body.id,
+        lastError: '',
+        deliveryUncertain: false,
+      });
+    }
+  } catch (error) {
+    const permanent = (error as { permanent?: boolean }).permanent;
+    const uncertain =
+      job.deliveryUncertain || (attempted && !(error as { definitive?: boolean }).definitive);
+    const terminal = permanent || job.attempts >= 10;
+    await finish(terminal ? (uncertain ? 'delivery_unknown' : 'failed') : 'pending', {
+      deliveryUncertain: uncertain,
+      lastError:
+        error instanceof Error && /^resend_/.test(error.message)
+          ? error.message
+          : 'email_delivery_or_database_error',
+      nextAttemptAt: new Date(
+        Date.now() + Math.min(60 * 60 * 1000, 30000 * 2 ** Math.min(job.attempts - 1, 7)),
+      ),
+    });
+    return terminal ? ('handled' as const) : ('retry' as const);
+  }
+  return 'handled' as const;
+}
+
 export async function processEmailOutbox(
   limit = 20,
   transport?: (payload: Record<string, any>, key: string) => Promise<string>,
 ) {
-  const config = emailConfig();
-  if (!config) return 0;
   let count = 0;
   while (count < limit) {
-    const leaseToken = randomUUID(),
-      now = new Date();
-    const job: any = await EmailOutbox.findOneAndUpdate(
-      {
-        mode: config.mode,
-        $or: [
-          { status: 'pending', nextAttemptAt: { $lte: now } },
-          { status: 'sending', lockedUntil: { $lte: now } },
-        ],
-      },
-      {
-        $set: { status: 'sending', leaseToken, lockedUntil: new Date(+now + 60000) },
-        $inc: { attempts: 1 },
-      },
-      { new: true, sort: { nextAttemptAt: 1, _id: 1 } },
-    ).select('+payload +leaseToken');
-    if (!job) break;
+    const result = await processOneEmailOutbox(undefined, transport);
+    if (result === 'idle') break;
     count++;
-    const owned = { _id: job._id, leaseToken, status: 'sending' };
-    const finish = (status: string, extra: Record<string, unknown> = {}) =>
-      EmailOutbox.updateOne(owned, {
-        $set: { status, ...extra },
-        $unset: { leaseToken: 1, lockedUntil: 1 },
-      });
-    const skip = (reason: string) =>
-      finish(job.deliveryUncertain ? 'delivery_unknown' : 'skipped', { lastError: reason });
-    if (job.firstAttemptAt && +now - +job.firstAttemptAt >= RETRY_WINDOW_MS) {
-      await finish('delivery_unknown', { lastError: 'delivery_unknown_retry_window_expired' });
-      continue;
-    }
-    let attempted = false;
-    try {
-      const user = await User.findOne({ _id: job.user, isActive: true, email: job.to }).select(
-        '+emailVerification',
-      );
-      if (!user) {
-        await skip('recipient_changed_or_inactive');
-        continue;
-      }
-      if (job.kind === 'verify_email') {
-        const hash = emailHash(verificationToken(String(job.user), job.to, job.payload.nonce));
-        if (
-          user.emailVerifiedAt ||
-          user.emailVerification?.tokenHash !== hash ||
-          !user.emailVerification ||
-          user.emailVerification.expiresAt <= new Date()
-        ) {
-          await skip('verification_superseded_or_expired');
-          continue;
-        }
-      } else if (job.kind === 'concept_update') {
-        if (
-          !user.emailVerifiedAt ||
-          !(await ConceptOrder.exists({ _id: job.conceptOrder, client: user._id }))
-        ) {
-          await skip('concept_recipient_invalid');
-          continue;
-        }
-      } else {
-        if (!user.emailVerifiedAt) {
-          await skip('recipient_unverified');
-          continue;
-        }
-        const booking = await Booking.findById(job.booking);
-        const workflow = await BookingWorkflow.findOne({ booking: job.booking });
-        const payment = booking && depositPaymentDto(booking, workflow);
-        if (
-          !user.emailVerifiedAt ||
-          !booking ||
-          String(booking.client) !== String(job.user) ||
-          payment?.status !== 'pending' ||
-          payment.reference !== job.paymentReference
-        ) {
-          await skip('deposit_no_longer_pending');
-          continue;
-        }
-      }
-      const payload = job.kind === 'verify_email' ? verificationMessage(job) : job.payload;
-      const stamp = await EmailOutbox.updateOne(owned, {
-        $set: {
-          ...(!job.firstAttemptAt ? { firstAttemptAt: new Date() } : {}),
-          deliveryUncertain: true,
-        },
-      });
-      if (!stamp.matchedCount) continue;
-      const dispatch = await EmailOutbox.findOne(owned).select('lockedUntil firstAttemptAt');
-      if (!dispatch || !dispatch.lockedUntil || +dispatch.lockedUntil <= Date.now()) continue;
-      if (dispatch.firstAttemptAt && Date.now() - +dispatch.firstAttemptAt >= RETRY_WINDOW_MS) {
-        await finish('delivery_unknown', { lastError: 'delivery_unknown_retry_window_expired' });
-        continue;
-      }
-      attempted = true;
-      if (transport || config.mode === 'test') {
-        const providerId = transport ? await transport(payload, job.dedupeKey) : `test-${job._id}`;
-        await finish('sent', {
-          sentAt: new Date(),
-          providerId,
-          testMessage: payload,
-          lastError: '',
-          deliveryUncertain: false,
-        });
-      } else {
-        const response = await fetch('https://api.resend.com/emails', {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${config.apiKey}`,
-            'Content-Type': 'application/json',
-            'Idempotency-Key': job.dedupeKey,
-          },
-          body: JSON.stringify(payload),
-          signal: AbortSignal.timeout(10000),
-        });
-        if (!response.ok) {
-          const error = new Error(`resend_http_${response.status}`) as Error & {
-            permanent?: boolean;
-            definitive?: boolean;
-          };
-          error.permanent = response.status < 500 && ![408, 409, 429].includes(response.status);
-          error.definitive = response.status < 500 && ![408, 409].includes(response.status);
-          throw error;
-        }
-        const body = (await response.json()) as { id?: string };
-        if (!body.id) throw new Error('resend_missing_message_id');
-        await finish('sent', {
-          sentAt: new Date(),
-          providerId: body.id,
-          lastError: '',
-          deliveryUncertain: false,
-        });
-      }
-    } catch (error) {
-      const permanent = (error as { permanent?: boolean }).permanent;
-      const uncertain =
-        job.deliveryUncertain || (attempted && !(error as { definitive?: boolean }).definitive);
-      await finish(
-        permanent || job.attempts >= 10 ? (uncertain ? 'delivery_unknown' : 'failed') : 'pending',
-        {
-          deliveryUncertain: uncertain,
-          lastError:
-            error instanceof Error && /^resend_/.test(error.message)
-              ? error.message
-              : 'email_delivery_or_database_error',
-          nextAttemptAt: new Date(
-            Date.now() + Math.min(60 * 60 * 1000, 30000 * 2 ** Math.min(job.attempts - 1, 7)),
-          ),
-        },
-      );
-    }
   }
   return count;
 }
 
 export function startEmailWorker() {
+  if (backgroundJobsEnabled()) return;
   let running = false;
   const tick = async () => {
     if (running) return;

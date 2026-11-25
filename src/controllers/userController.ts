@@ -1,11 +1,11 @@
 import { Request, Response } from 'express';
 import { isValidObjectId } from 'mongoose';
-import User from '../models/User';
+import User, { ACTIVE_ROLES } from '../models/User';
 import type { UserRole } from '../models/User';
 import { sendResponse } from '../utils/response';
 import { isDuplicateKeyError, normalizeUsername, trimmedText } from '../utils/input';
 
-const allRoles: UserRole[] = [0, 1, 2, 3, 4, 5, 6];
+const allRoles = ACTIVE_ROLES;
 
 const canManageUser = (actorRoles: number[], targetRoles: number[]): boolean =>
   actorRoles.includes(0) || !targetRoles.includes(0);
@@ -33,8 +33,8 @@ export const getPhotographers = async (_req: Request, res: Response): Promise<vo
   sendResponse(res, 200, true, 'OK', users);
 };
 
-export const getSales = async (_req: Request, res: Response): Promise<void> => {
-  const users = await User.find({ roles: { $in: [2, 4] }, isActive: true })
+export const getCoordinators = async (_req: Request, res: Response): Promise<void> => {
+  const users = await User.find({ roles: { $in: [0, 1] }, isActive: true })
     .select('_id username name roles')
     .sort({ username: 1 });
   sendResponse(res, 200, true, 'OK', users);

@@ -2,6 +2,7 @@ import crypto, { createHash } from 'crypto';
 import { Request, Response } from 'express';
 import { ClientSession, Types, isValidObjectId } from 'mongoose';
 import Booking from '../models/Booking';
+import Package from '../models/Package';
 import BookingWorkflow, { IBookingWorkflow } from '../models/BookingWorkflow';
 import Category from '../models/Category';
 import Costume from '../models/Costume';
@@ -132,7 +133,7 @@ const toDto = async (booking: any, workflow: IBookingWorkflow | null, actor: Act
     (assignedPhotographer?._id === String(actor._id) ||
       assignedSupportPhotographers.some((person) => person._id === String(actor._id)) ||
       !!workflow?.resources?.photographers?.some((id) => String(id) === String(actor._id)));
-  if (!clientView && !canManage && !isAssigned && !isRole(actor, 5)) {
+  if (!clientView && !canManage && !isAssigned) {
     throw new WorkflowProblem(404, 'Không tìm thấy booking');
   }
 
@@ -153,7 +154,7 @@ const toDto = async (booking: any, workflow: IBookingWorkflow | null, actor: Act
       }
     : null;
   const transactions = workflow?.payments ?? [];
-  const financialView = clientView || canManage || isRole(actor, 5);
+  const financialView = clientView || canManage;
   const packageCostumeTypes = booking.packageSnapshot?.costumeIds ?? [];
   const costumeRows =
     clientView || canManage
@@ -390,7 +391,6 @@ const toDto = async (booking: any, workflow: IBookingWorkflow | null, actor: Act
         .filter((event: any) => {
           if (canManage) return true;
           if (clientView) return event.audience === 'client';
-          if (isRole(actor, 5)) return event.audience === 'accounting';
           return (
             event.audience === 'photographer' ||
             ['photographer.assign', 'booking.expire'].includes(event.action)
@@ -427,8 +427,17 @@ export const getWorkflow = async (req: Request, res: Response): Promise<void> =>
 };
 
 export async function workflowListRows(bookings: any[], actor: Actor) {
-  const canSeeAll = admin(actor) || isRole(actor, 5);
+  const canSeeAll = admin(actor);
   const ids = bookings.map((booking: any) => booking._id);
+  const packageIds = bookings.map((booking) => booking.package).filter(Boolean);
+  const packages = packageIds.length
+    ? await Package.find({ _id: { $in: packageIds } })
+        .select('details.gallery')
+        .lean()
+    : [];
+  const thumbnails = new Map(
+    packages.map((pkg) => [String(pkg._id), pkg.details?.gallery?.[0]?.id]),
+  );
   const workflows = await BookingWorkflow.find({ booking: { $in: ids } }).lean();
   const schedules = await Schedule.find({
     _id: { $in: workflows.map((workflow) => workflow.resources?.schedule).filter(Boolean) },
@@ -454,6 +463,9 @@ export async function workflowListRows(bookings: any[], actor: Actor) {
       assignedSupportPhotographers:
         assignments.get(String(booking._id))?.assignedSupportPhotographers ?? [],
       packageName: booking.packageName,
+      thumbnailUrl: thumbnails.get(String(booking.package))
+        ? `/api/media/packages/${encodeURIComponent(thumbnails.get(String(booking.package))!)}`
+        : undefined,
       className: booking.className,
       school: booking.school,
       startTime: schedule?.startTime ?? workflow?.quote?.proposedSchedule?.startTime,
@@ -510,7 +522,7 @@ export const listWorkflows = async (req: Request, res: Response): Promise<void> 
     ) {
       throw new WorkflowProblem(400, 'Thông tin phân trang không hợp lệ');
     }
-    const canSeeAll = admin(actor) || isRole(actor, 5);
+    const canSeeAll = admin(actor);
     let bookingFilter: Record<string, unknown> = {};
     if (!canSeeAll) {
       const clauses: Record<string, unknown>[] = [];
@@ -1380,7 +1392,6 @@ const runAction = async (
           'member-link.open',
           'member-link.close',
         ].includes(action)) ||
-      (action === 'payment.record' && isRole(actor, 5)) ||
       (['progress.update', 'delivery.revision.start'].includes(action) &&
         isRole(actor, 3) &&
         !!workflow?.resources.photographers.some((id: any) => String(id) === String(actor._id)));
@@ -1642,7 +1653,7 @@ const runAction = async (
         break;
       }
       case 'payment.record': {
-        requireActor(isAdmin || isRole(actor, 5));
+        requireActor(isAdmin);
         await recordWorkflowPayment(booking, workflow, actor, body, session);
         break;
       }

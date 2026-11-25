@@ -1,5 +1,7 @@
+import { backgroundJobsEnabled } from '../config/queue';
+import { submitAlbumOperation, operationDto } from '../services/backgroundOperations';
+import { executeBookingAlbumCommand } from '../services/bookingAlbumCommand';
 import { Router } from 'express';
-import { createHmac } from 'node:crypto';
 import { isValidObjectId } from 'mongoose';
 import Album from '../models/BookingAlbum';
 import Photo from '../models/BookingAlbumPhoto';
@@ -10,17 +12,14 @@ import { requireClientPortal } from '../middleware/featureFlags';
 import { createRateLimit } from '../middleware/authRateLimit';
 import { sendResponse } from '../utils/response';
 import { WorkflowProblem } from '../services/workflowTransactions';
-import { listDriveFolders } from '../services/driveAlbumSource';
 import { deliveryAccess } from '../services/bookingDelivery';
 import {
   albumDto,
-  albumHash,
   mutateAlbum,
   ownerAlbumAccess,
   publicAlbumAccess,
   readAlbumPhoto,
   staffAlbumAccess,
-  syncAlbumPhotos,
 } from '../services/bookingAlbum';
 
 export const albumRoutes = Router({ mergeParams: true });
@@ -91,149 +90,28 @@ albumRoutes.post(
       ].includes(operation)
     )
       throw new WorkflowProblem(404, 'Không tìm thấy thao tác.');
-    await staffAlbumAccess(req.params.id, req.user!);
-    let source: Awaited<ReturnType<typeof listDriveFolders>> | undefined;
-    if (['configure', 'sync', 'delivery-sync'].includes(operation)) {
-      const album = await Album.findOne({ booking: req.params.id });
-      const folders =
-        operation === 'sync'
-          ? album?.folders.map(
-              (f) =>
-                `https://drive.google.com/drive/folders/${f.id}${f.resourceKey ? `?resourcekey=${f.resourceKey}` : ''}`,
-            )
-          : req.body.folders;
-      source = await listDriveFolders(folders);
-    }
-    if (operation === 'share' && !process.env.JWT_SECRET)
-      throw new WorkflowProblem(503, 'Chưa cấu hình bí mật xác thực.');
-    const token =
-      operation === 'share'
-        ? createHmac('sha256', process.env.JWT_SECRET!)
-            .update(
-              JSON.stringify([
-                'album-share',
-                req.params.id,
-                String(req.user!._id),
-                req.get('Idempotency-Key'),
-              ]),
-            )
-            .digest('base64url')
-        : undefined;
-    const album = await mutateAlbum(
-      {
-        bookingId: req.params.id,
-        actor: req.user!,
-        expectedVersion: req.body.expectedVersion,
-        key: req.get('Idempotency-Key') || '',
+    const key = req.get('Idempotency-Key') || '';
+    if (backgroundJobsEnabled() && ['configure', 'sync', 'delivery-sync'].includes(operation)) {
+      const job = await submitAlbumOperation(
+        'yearbook',
+        req.params.id,
+        req.user!,
         operation,
-        payload: req.body,
-      },
-      async (a, workflow, session) => {
-        if (
-          ['configure', 'sync', 'publish', 'reopen'].includes(operation) &&
-          workflow.lifecycle !== 'editing'
-        )
-          throw new WorkflowProblem(409, 'Chỉ mở/cập nhật lựa chọn khi đơn đang hậu kỳ.');
-        if (operation === 'configure') {
-          if (
-            typeof req.body.title !== 'string' ||
-            !req.body.title.trim() ||
-            req.body.title.trim().length > 160 ||
-            !Number.isInteger(req.body.limit) ||
-            req.body.limit < 0 ||
-            req.body.limit > 10000
-          )
-            throw new WorkflowProblem(
-              400,
-              'Kiểm tra tên album và giới hạn chọn (0 là không giới hạn).',
-            );
-          if (a.status === 'closed')
-            throw new WorkflowProblem(409, 'Mở lại lựa chọn trước khi sửa album.');
-          const selected = await Photo.countDocuments({
-            album: a._id,
-            deliveryVersion: 0,
-            selected: true,
-            available: true,
-          }).session(session);
-          if (req.body.limit && req.body.limit < selected)
-            throw new WorkflowProblem(409, 'Giới hạn mới nhỏ hơn số ảnh đã chọn.');
-          a.title = req.body.title.trim();
-          a.limit = req.body.limit;
-        }
-        if (source) {
-          if (
-            operation === 'delivery-sync' &&
-            !['editing', 'revision_requested'].includes(workflow.lifecycle)
-          )
-            throw new WorkflowProblem(
-              409,
-              'Chỉ chuẩn bị ảnh bàn giao khi đang hậu kỳ/cần chỉnh sửa.',
-            );
-          await syncAlbumPhotos(a, source.images, operation === 'delivery-sync' ? -1 : 0, session);
-          if (
-            operation !== 'delivery-sync' &&
-            a.limit &&
-            (await Photo.countDocuments({
-              album: a._id,
-              deliveryVersion: 0,
-              available: true,
-              selected: true,
-            }).session(session)) > a.limit
-          )
-            throw new WorkflowProblem(
-              409,
-              'Ảnh trở lại thư mục khiến lựa chọn vượt giới hạn. Tăng giới hạn trước khi đồng bộ.',
-            );
-          a.skipped = source.skipped;
-          if (operation !== 'delivery-sync') {
-            a.folders = source.folders;
-            if (!source.images.some((p) => p.id === a.coverId)) a.coverId = source.images[0]?.id;
-          }
-        }
-        if (operation === 'publish' || operation === 'reopen') {
-          if (
-            !(await Photo.exists({ album: a._id, deliveryVersion: 0, available: true }).session(
-              session,
-            ))
-          )
-            throw new WorkflowProblem(400, 'Album cần có ảnh trước khi mở chọn.');
-          a.status = 'open';
-          a.finalizedAt = undefined;
-        }
-        if (operation === 'close') {
-          if (a.status !== 'open') throw new WorkflowProblem(409, 'Album chưa mở chọn.');
-          a.status = 'closed';
-        }
-        if (operation === 'share') {
-          a.tokenHash = albumHash(token!);
-          a.shared = true;
-        }
-        if (operation === 'revoke') {
-          a.shared = false;
-          a.tokenHash = undefined;
-        }
-        if (operation === 'cover') {
-          if (typeof req.body.coverId !== 'string' || !/^[\w-]{10,200}$/.test(req.body.coverId))
-            throw new WorkflowProblem(400, 'Ảnh bìa không hợp lệ.');
-          if (
-            !(await Photo.exists({
-              album: a._id,
-              deliveryVersion: 0,
-              available: true,
-              'drive.id': req.body.coverId,
-            }).session(session))
-          )
-            throw new WorkflowProblem(400, 'Chọn ảnh bìa thuộc album.');
-          a.coverId = req.body.coverId;
-        }
-      },
+        req.body,
+        key,
+      );
+      sendResponse(res, 202, true, 'Đã nhận yêu cầu đồng bộ ảnh.', {
+        backgroundOperation: operationDto(job),
+      });
+      return;
+    }
+    sendResponse(
+      res,
+      200,
+      true,
+      'Đã lưu album.',
+      await executeBookingAlbumCommand(req.params.id, req.user!, operation, req.body, key),
     );
-    // Replaying share cannot return a different secret for the existing token hash.
-    const actual = await Album.findById(album._id).select('+tokenHash');
-    sendResponse(res, 200, true, 'Đã lưu album.', {
-      ...(await albumDto(album, true)),
-      ...(token && actual?.tokenHash === albumHash(token) ? { token } : {}),
-    });
   }),
 );
 albumRoutes.get(

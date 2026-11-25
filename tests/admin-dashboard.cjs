@@ -95,7 +95,8 @@ test('dashboard HTTP exposes only aggregate user growth to admins and preserves 
   assert.equal((await get()).status, 401);
   assert.equal((await get(6)).status, 403);
   assert.equal(userReads, 0);
-  for (const role of [0, 1, 2, 3, 4]) {
+  for (const role of [2, 4]) assert.equal((await get(role)).status, 401);
+  for (const role of [0, 1, 3]) {
     const response = await get(role);
     assert.equal(response.status, 200);
     const data = (await response.json()).data;

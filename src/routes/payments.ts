@@ -24,7 +24,7 @@ router.post(
     next();
   },
   protect,
-  requireRole(0, 1, 5, 6),
+  requireRole(0, 1, 6),
   json({ limit: '2kb' }),
   asyncHandler(async (req, res) => {
     try {
@@ -43,7 +43,7 @@ router.post(
 router.post(
   '/sepay/receipts/:id/resolve-rental',
   protect,
-  requireRole(0, 1, 5),
+  requireRole(0, 1),
   json({ limit: '4kb' }),
   asyncHandler(async (req, res) => {
     try {
@@ -129,7 +129,7 @@ router.post(
 router.get(
   '/sepay/receipts',
   protect,
-  requireRole(0, 1, 5),
+  requireRole(0, 1),
   asyncHandler(async (req, res) => {
     const page = boundedInteger(req.query.page ?? 1, 1, 100000),
       limit = boundedInteger(req.query.limit ?? 20, 1, 50);

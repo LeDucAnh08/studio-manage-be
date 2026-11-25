@@ -5,7 +5,7 @@ import * as c from '../controllers/customerController';
 
 const router = Router();
 
-router.use(protect, requireRole(0, 1, 2, 4));
+router.use(protect, requireRole(0, 1));
 
 router.route('/').get(c.getAll).post(c.create);
 router.get('/:id/students', c.getStudents);

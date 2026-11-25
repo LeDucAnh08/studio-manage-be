@@ -21,18 +21,40 @@ test('ongoing shoots use only the confirmed Vietnam time window, including exact
   const start = Date.parse('2026-11-20T08:00:00+07:00');
   const end = Date.parse('2026-11-20T16:00:00+07:00');
   assert.deepEqual(bookingShootWindow(schedule), {
-    startAt: new Date(start).toISOString(), endAt: new Date(end).toISOString(),
+    startAt: new Date(start).toISOString(),
+    endAt: new Date(end).toISOString(),
   });
-  for (const lifecycle of ['confirmed', 'shooting', 'editing', 'revision_requested', 'change_pending']) {
+  for (const lifecycle of [
+    'confirmed',
+    'shooting',
+    'editing',
+    'revision_requested',
+    'change_pending',
+  ]) {
     const workflow = { lifecycle, changeRequest: { previousLifecycle: 'shooting' } };
-    for (const [now, stage] of [[start - 1, 'confirmed'], [start, 'active'], [end - 1, 'active'], [end, 'editing'], [end + 1, 'editing']])
-      assert.equal(bookingOrderStage('approved', workflow, schedule, now), stage, `${lifecycle} at ${now}`);
+    for (const [now, stage] of [
+      [start - 1, 'confirmed'],
+      [start, 'active'],
+      [end - 1, 'active'],
+      [end, 'editing'],
+      [end + 1, 'editing'],
+    ])
+      assert.equal(
+        bookingOrderStage('approved', workflow, schedule, now),
+        stage,
+        `${lifecycle} at ${now}`,
+      );
     assert.notEqual(bookingOrderStage('approved', workflow, null, start), 'active');
-    assert.notEqual(bookingOrderStage('approved', workflow, { ...schedule, endTime: '07:00' }, start), 'active');
+    assert.notEqual(
+      bookingOrderStage('approved', workflow, { ...schedule, endTime: '07:00' }, start),
+      'active',
+    );
   }
   for (const lifecycle of ['delivered', 'accepted', 'completed', 'cancelled'])
-    assert.equal(bookingOrderStage('approved', { lifecycle }, schedule, start),
-      lifecycle === 'accepted' ? 'delivered' : lifecycle);
+    assert.equal(
+      bookingOrderStage('approved', { lifecycle }, schedule, start),
+      lifecycle === 'accepted' ? 'delivered' : lifecycle,
+    );
   for (const status of ['pending', 'rejected', 'cancelled'])
     assert.equal(bookingOrderStage(status, { lifecycle: 'shooting' }, schedule, start), status);
 });
@@ -77,8 +99,8 @@ test('customer order views filter all pages, retain legacy intake and isolate ea
       school: 'THPT Yume',
       contactName: 'Khách thử',
       phone: '0901234567',
-      startAt: '2026-11-19T07:30:00+07:00',
-      endAt: '2026-11-19T15:00:00+07:00',
+      startAt: '2099-11-19T07:30:00+07:00',
+      endAt: '2099-11-19T15:00:00+07:00',
       location: 'Studio',
       status: index === 3 ? 'rejected' : index < 3 || index === 25 ? 'approved' : 'pending',
     })),
@@ -91,8 +113,13 @@ test('customer order views filter all pages, retain legacy intake and isolate ea
   ]);
   const app = express();
   app.use('/workflows', require('../src/routes/workflows').default);
-  app.get('/workflows/:id', require('../src/middleware/auth').protect,
-    require('../src/middleware/asyncHandler').asyncHandler(require('../src/controllers/workflowController').getWorkflow));
+  app.get(
+    '/workflows/:id',
+    require('../src/middleware/auth').protect,
+    require('../src/middleware/asyncHandler').asyncHandler(
+      require('../src/controllers/workflowController').getWorkflow,
+    ),
+  );
   server = app.listen(0, '127.0.0.1');
   await new Promise((resolve) => server.once('listening', resolve));
   const call = (query = '', user = owner) =>
@@ -201,9 +228,22 @@ test('customer order views filter all pages, retain legacy intake and isolate ea
     for (const offset of [-1, 0, 1]) {
       const shootDate = new Date(Date.parse(`${today}T00:00:00+07:00`) + offset * 86400000);
       for (const lifecycle of ['confirmed', 'shooting', 'editing', 'revision_requested']) {
-        const booking = await Booking.create({ ...records[0].toObject(), _id: new mongoose.Types.ObjectId() });
-        const schedule = await Schedule.create({ customer: new mongoose.Types.ObjectId(), shootDate, startTime: '00:00', endTime: '23:59', status: 'confirmed' });
-        await BookingWorkflow.create({ booking: booking._id, lifecycle, resources: { schedule: schedule._id } });
+        const booking = await Booking.create({
+          ...records[0].toObject(),
+          _id: new mongoose.Types.ObjectId(),
+        });
+        const schedule = await Schedule.create({
+          customer: new mongoose.Types.ObjectId(),
+          shootDate,
+          startTime: '00:00',
+          endTime: '23:59',
+          status: 'confirmed',
+        });
+        await BookingWorkflow.create({
+          booking: booking._id,
+          lifecycle,
+          resources: { schedule: schedule._id },
+        });
         expected.set(String(booking._id), bookingOrderStage('approved', { lifecycle }, schedule));
         const detail = await (await call(`/${booking._id}`)).json();
         assert.equal(detail.data.workflow.orderStage, expected.get(String(booking._id)));

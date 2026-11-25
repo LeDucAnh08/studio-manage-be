@@ -5,6 +5,8 @@ import EmailOutbox from '../models/EmailOutbox';
 import User from '../models/User';
 import { enqueuePendingDepositEmails, processEmailOutbox } from '../services/email';
 import { withResourceTransaction } from '../services/workflowTransactions';
+import { backgroundJobsEnabled } from '../config/queue';
+import { assertJobRuntime, closeQueues, getQueue } from '../services/jobQueue';
 
 dotenv.config({ path: path.resolve(__dirname, '../../.env') });
 async function main() {
@@ -40,9 +42,30 @@ async function main() {
       console.log(`Checked ${users.length} accounts; eligible missing notices are queued.`);
     } else if (command === 'retry') {
       if (!mongoose.isValidObjectId(id)) throw new Error('Invalid job ID');
+      const eligible = await EmailOutbox.findOne({
+        _id: id,
+        status: 'failed',
+        attempts: { $lt: 10 },
+        firstAttemptAt: { $gt: new Date(Date.now() - 23 * 3600000) },
+      });
+      if (!eligible) throw new Error('Original retry limit or window exhausted');
+      if (backgroundJobsEnabled()) {
+        await assertJobRuntime();
+        const queued = await getQueue('email').getJob(`email-${id}`);
+        if (queued) {
+          if (!['failed', 'completed'].includes(await queued.getState()))
+            throw new Error('Job is still active');
+          await queued.remove();
+        }
+      }
       const job = await EmailOutbox.findOneAndUpdate(
-        { _id: id, status: 'failed', firstAttemptAt: { $gt: new Date(Date.now() - 23 * 3600000) } },
-        { $set: { status: 'pending', nextAttemptAt: new Date(), attempts: 0 } },
+        {
+          _id: id,
+          status: 'failed',
+          attempts: { $lt: 10 },
+          firstAttemptAt: { $gt: new Date(Date.now() - 23 * 3600000) },
+        },
+        { $set: { status: 'pending', nextAttemptAt: new Date() } },
         { new: true },
       );
       if (!job)
@@ -50,8 +73,13 @@ async function main() {
           'Only failed jobs within the original 23-hour window may retry. Older ambiguous deliveries require provider-log review; do not reset firstAttemptAt.',
         );
       console.log(`Queued ${job._id}; provider idempotency key and payload retained.`);
-    } else console.log(`Processed ${await processEmailOutbox()} jobs.`);
+    } else {
+      if (backgroundJobsEnabled())
+        throw new Error('BullMQ owns delivery; use the configured worker');
+      console.log(`Processed ${await processEmailOutbox()} jobs.`);
+    }
   } finally {
+    await closeQueues();
     await mongoose.disconnect();
   }
 }

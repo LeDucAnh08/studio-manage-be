@@ -25,7 +25,7 @@ const accountRequestSchema = new Schema<IAccountRequest>(
     phone: { type: String, trim: true },
     note: { type: String, trim: true, maxlength: 1000 },
     passwordHash: { type: String, required: true, select: false },
-    requestedRole: { type: Number, enum: [2, 3, 4, 5], required: true },
+    requestedRole: { type: Number, enum: [3], required: true },
     status: { type: String, enum: ['pending', 'approved', 'rejected'], default: 'pending' },
     reviewNote: { type: String, trim: true, maxlength: 1000 },
     reviewedBy: { type: Schema.Types.ObjectId, ref: 'User' },

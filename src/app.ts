@@ -45,6 +45,9 @@ import { ensureDeliveryStorage } from './services/bookingDelivery';
 import BookingAlbum from './models/BookingAlbum';
 import BookingAlbumPhoto from './models/BookingAlbumPhoto';
 import BookingAlbumSelection from './models/BookingAlbumSelection';
+import { initializeJobRuntime } from './services/jobQueue';
+import BackgroundOperation from './models/BackgroundOperation';
+import backgroundJobsRoutes from './routes/backgroundJobs';
 
 const envFile = '.env';
 dotenv.config({ path: path.resolve(__dirname, '..', envFile) });
@@ -107,6 +110,7 @@ app.use('/api/telegram', telegramRoutes);
 app.use('/api/seasons', seasonController);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/reports', reportRoutes);
+app.use('/api/background-jobs', backgroundJobsRoutes);
 
 app.get('/api/health', (_req, res) => res.json({ status: 'ok' }));
 
@@ -119,6 +123,8 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
 const PORT = Number(process.env.PORT) || 5000;
 
 connectDB().then(async () => {
+  await initializeJobRuntime();
+  await BackgroundOperation.init();
   emailConfig();
   await EmailOutbox.init();
   await ensureDeliveryStorage();

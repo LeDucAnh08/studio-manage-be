@@ -76,11 +76,11 @@ test('package checkout, temporary crew holds, automatic confirmation, roster and
     await mongoose.connection.dropDatabase();
     await mongoose.disconnect();
   });
-  const [admin, client, accountant, photographer, backup] = await User.create(
+  const [admin, client, financeAdmin, photographer, backup] = await User.create(
     [
       ['admin', 0],
       ['client', 6],
-      ['accountant', 5],
+      ['financeAdmin', 1],
       ['photo', 3],
       ['backup', 3],
     ].map(([name, role]) => ({
@@ -220,20 +220,20 @@ test('package checkout, temporary crew holds, automatic confirmation, roster and
     'partial and duplicate payments preserve one transaction; sufficient deposit creates one schedule without a roster',
     async () => {
       const partial = { action: 'payment.record', kind: 'deposit', amount: 100000, method: 'cash' };
-      await action(first, accountant, partial, 200, 'package-partial-idempotent');
-      await action(first, accountant, partial, 200, 'package-partial-idempotent');
+      await action(first, financeAdmin, partial, 200, 'package-partial-idempotent');
+      await action(first, financeAdmin, partial, 200, 'package-partial-idempotent');
       assert.equal(await Transaction.countDocuments({ workflowBooking: first }), 1);
       assert.equal(await Schedule.countDocuments({ workflowBooking: first }), 0);
       await action(
         first,
-        accountant,
+        financeAdmin,
         { action: 'payment.record', kind: 'deposit', amount: 200000, method: 'cash' },
         200,
         'package-final-idempotent',
       );
       await action(
         first,
-        accountant,
+        financeAdmin,
         { action: 'payment.record', kind: 'deposit', amount: 200000, method: 'cash' },
         200,
         'package-final-idempotent',
@@ -295,7 +295,7 @@ test('package checkout, temporary crew holds, automatic confirmation, roster and
       workflow = await Workflow.findOne({ booking: first }).lean();
       assert.equal(await Student.countDocuments({ customer: workflow.customer }), 1);
       const data = await action(first, client, { action: 'member-link.open' });
-      const intake = await call(`/public/member-intake/${data.workflow.memberEntry.token}`, null, {
+      const intake = await call(`/public/member-intake/${data.workflow.memberEntry.token}`, client, {
         requestId: 'package-member-b',
         name: 'Bạn B',
         gender: 'male',
@@ -316,7 +316,7 @@ test('package checkout, temporary crew holds, automatic confirmation, roster and
         photographerId: String(backup._id),
       });
       assert.equal((await approve(id)).status, 200);
-      await action(id, accountant, {
+      await action(id, financeAdmin, {
         action: 'payment.record',
         kind: 'deposit',
         amount: 10000,
@@ -339,7 +339,7 @@ test('package checkout, temporary crew holds, automatic confirmation, roster and
       assert.equal(detail.body.data.booking.status, 'cancelled');
       assert.equal(detail.body.data.workflow.payments.refundDue, 10000);
       assert.equal(detail.body.data.workflow.payments.totalDue, 0);
-      await action(id, accountant, {
+      await action(id, financeAdmin, {
         action: 'payment.record',
         kind: 'refund',
         amount: 10000,
@@ -373,7 +373,7 @@ test('package checkout, temporary crew holds, automatic confirmation, roster and
         photographerId: String(backup._id),
       });
       assert.equal((await approve(id)).status, 200);
-      await action(id, accountant, {
+      await action(id, financeAdmin, {
         action: 'payment.record',
         kind: 'deposit',
         amount: 100000,

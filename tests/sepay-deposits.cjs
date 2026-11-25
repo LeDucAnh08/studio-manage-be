@@ -48,8 +48,8 @@ test('automatic SePay package deposits authenticate, deduplicate and confirm ato
     Booking.createIndexes(),
     Schedule.createIndexes(),
   ]);
-  const [admin, accountant, client, photographer] = await User.create(
-    [0, 5, 6, 3].map((role) => ({
+  const [admin, financeAdmin, client, photographer] = await User.create(
+    [0, 1, 6, 3].map((role) => ({
       username: `sepay.role${role}`,
       password: 'SePayTest123!',
       name: `Actor ${role}`,
@@ -362,7 +362,7 @@ test('automatic SePay package deposits authenticate, deduplicate and confirm ato
       const id = await make(),
         ref = (await detail(id)).workflow.depositPayment.reference;
       const results = await Promise.all([
-        action(id, accountant, {
+        action(id, financeAdmin, {
           action: 'payment.record',
           kind: 'deposit',
           amount: 100000,
@@ -373,7 +373,7 @@ test('automatic SePay package deposits authenticate, deduplicate and confirm ato
       assert.equal(results[0].status, 409);
       assert.equal(results[1].status, 200);
       assert.equal(await Transaction.countDocuments({ workflowBooking: id }), 1);
-      const cash = await action(id, accountant, {
+      const cash = await action(id, financeAdmin, {
         action: 'payment.record',
         kind: 'deposit',
         amount: 200000,
@@ -384,11 +384,11 @@ test('automatic SePay package deposits authenticate, deduplicate and confirm ato
     },
   );
   await t.test(
-    'exception list is available only to admin/accountant and sandbox cannot be enabled against the operating database',
+    'exception list is available only to administrators and sandbox cannot be enabled against the operating database',
     async () => {
       assert.equal((await call('/payments/sepay/receipts', client)).status, 403);
       assert.equal((await call('/payments/sepay/receipts', photographer)).status, 403);
-      const list = await call('/payments/sepay/receipts', accountant);
+      const list = await call('/payments/sepay/receipts', financeAdmin);
       assert.equal(list.status, 200);
       assert.ok(list.body.data.length > 0);
       assert.ok(list.body.data.every((row) => !row.payloadHash));
@@ -448,7 +448,7 @@ test('automatic SePay package deposits authenticate, deduplicate and confirm ato
       assert.equal(receipt.conflicts.length, 1);
       assert.equal(await Transaction.countDocuments({ workflowBooking: id }), 1);
       assert.equal((await detail(id)).workflow.payments.netReceived, 100000);
-      const list = await call('/payments/sepay/receipts', accountant);
+      const list = await call('/payments/sepay/receipts', financeAdmin);
       assert.ok(list.body.data.some((row) => row._id === String(receipt._id)));
       assert.equal(receipt.conflicts[0].bankReference, event.referenceCode);
       const bankCode = process.env.PAYMENT_BANK_CODE;

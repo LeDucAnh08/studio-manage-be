@@ -6,8 +6,8 @@ import * as c from '../controllers/userController';
 const router = Router();
 
 // Available to any logged-in user (for assignment dropdowns)
-router.get('/photographers', protect, requireRole(0, 1, 2, 3, 4, 5), c.getPhotographers);
-router.get('/sales', protect, requireRole(0, 1, 2, 3, 4, 5), c.getSales);
+router.get('/photographers', protect, requireRole(0, 1, 3), c.getPhotographers);
+router.get('/coordinators', protect, requireRole(0, 1), c.getCoordinators);
 
 // All other user management routes require superadmin
 router.use(protect, requireRole(0, 1));

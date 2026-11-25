@@ -7,7 +7,8 @@
  * receives a consistent, strict shape.
  */
 
-export type UserRole = 0 | 1 | 2 | 3 | 4 | 5 | 6;
+import type { UserRole } from '../models/User';
+export type { UserRole };
 
 export interface UserDto {
   _id: string;

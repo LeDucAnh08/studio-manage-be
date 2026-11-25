@@ -9,6 +9,6 @@ const router = Router();
 
 router.get('/photographer', protect, requireRole(3), asyncHandler(getPhotographerStats));
 
-router.get('/', protect, requireRole(0, 1, 2, 3, 4), asyncHandler(getStats));
+router.get('/', protect, requireRole(0, 1, 3), asyncHandler(getStats));
 
 export default router;

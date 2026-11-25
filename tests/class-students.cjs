@@ -78,9 +78,10 @@ test('class roster keeps existing role permissions and reads only that class boo
             },
     });
   assert.equal((await get()).status, 401);
-  for (const role of [3, 5, 6]) assert.equal((await get(role)).status, 403);
+  for (const role of [3, 6]) assert.equal((await get(role)).status, 403);
   assert.equal(reads, 0);
-  for (const role of [0, 1, 2, 4]) {
+  for (const role of [2, 4, 5]) assert.equal((await get(role)).status, 401);
+  for (const role of [0, 1]) {
     const result = await get(role);
     assert.equal(result.status, 200);
     assert.deepEqual((await result.json()).data, {

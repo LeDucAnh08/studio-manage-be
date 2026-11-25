@@ -91,7 +91,7 @@ const financials = (order: any) => {
   };
 };
 const dto = (order: any, req: Request) => {
-  const finance = roles(req, 0, 1, 2, 5, 6);
+  const finance = roles(req, 0, 1, 6);
   const quote = (value: any) =>
     value
       ? {
@@ -118,7 +118,7 @@ const dto = (order: any, req: Request) => {
     balancePayment: finance ? rentalPaymentDto(order, 'balance') : undefined,
     reservationIssue: order.reservationIssue,
     contactName: order.contactName,
-    phone: roles(req, 5) && !roles(req, 0, 1, 2, 4, 6) ? undefined : order.phone,
+    phone: order.phone,
     note: order.note,
     requestedLines: order.requestedLines.map((line: any) => ({
       ...line,
@@ -399,9 +399,21 @@ export const listRentals = async (req: Request, res: Response): Promise<void> =>
         .lean(),
       RentalOrder.countDocuments(filter),
     ]);
+    const firstCostume = (row: (typeof rows)[number]) =>
+      (row.quote?.lines ?? row.requestedLines)[0]?.costumeId;
+    const costumeIds = rows.map(firstCostume).filter(Boolean);
+    const costumes = costumeIds.length
+      ? await Costume.find({ _id: { $in: costumeIds } })
+          .select('imageUrl')
+          .lean()
+      : [];
+    const thumbnails = new Map(costumes.map((costume) => [String(costume._id), costume.imageUrl]));
     res.json({
       success: true,
-      data: rows.map((row) => dto(row, req)),
+      data: rows.map((row) => ({
+        ...dto(row, req),
+        thumbnailUrl: thumbnails.get(String(firstCostume(row))),
+      })),
       pagination: { total, page, limit },
     });
   } catch (error) {
@@ -423,21 +435,21 @@ export const actRental = async (req: Request, res: Response): Promise<void> => {
       body = req.body,
       action = body.action;
     const allowed: Record<string, boolean> = {
-      'quote.propose': roles(req, 0, 1, 2),
-      reject: roles(req, 0, 1, 2),
+      'quote.propose': roles(req, 0, 1),
+      reject: roles(req, 0, 1),
       'quote.accept': roles(req, 6),
       withdraw: roles(req, 6),
       'resources.confirm': roles(req, 0, 1),
-      'payment.record': roles(req, 0, 1, 5),
+      'payment.record': roles(req, 0, 1),
       'fulfillment.refund': roles(req, 0, 1),
       handover: roles(req, 0, 1),
       return: roles(req, 0, 1),
       'settlement.propose': roles(req, 0, 1),
       'settlement.accept': roles(req, 6),
       'change.request': roles(req, 6),
-      'change.propose': roles(req, 0, 1, 2),
+      'change.propose': roles(req, 0, 1),
       'change.accept': roles(req, 6),
-      'change.decline': roles(req, 0, 1, 2, 6),
+      'change.decline': roles(req, 0, 1, 6),
       'feedback.submit': roles(req, 6),
     };
     assert(

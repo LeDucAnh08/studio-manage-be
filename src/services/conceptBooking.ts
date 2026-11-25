@@ -35,7 +35,7 @@ import {
 } from './conceptPolicy';
 
 export const admin = (actor: any) => actor.roles.some((r: number) => [0, 1].includes(r));
-export const finance = (actor: any) => admin(actor) || actor.roles.includes(5);
+export const finance = admin;
 export const assigned = (order: any, actor: any) =>
   actor.roles.includes(3) &&
   [order.photographer, order.editor].some((id) => String(id) === String(actor._id));
@@ -45,15 +45,7 @@ export async function accessOrder(id: string, actor: any, session?: ClientSessio
   const order = await Order.findById(objectId(id))
     .select('+commands +fingerprint')
     .session(session || null);
-  if (
-    !order ||
-    !(
-      owner(order, actor) ||
-      admin(actor) ||
-      assigned(order, actor) ||
-      actor.roles.some((r: number) => [2, 5].includes(r))
-    )
-  )
+  if (!order || !(owner(order, actor) || admin(actor) || assigned(order, actor)))
     throw new WorkflowProblem(404, 'Không tìm thấy đơn concept.');
   return order;
 }
@@ -684,7 +676,7 @@ export async function orderCommand(
         }
       }
     } else if (operation === 'reconcile') {
-      if (!finance(actor)) throw new WorkflowProblem(403, 'Chỉ kế toán đối soát.');
+      if (!finance(actor)) throw new WorkflowProblem(403, 'Chỉ quản trị viên đối soát.');
       const receipt = await SePayReceipt.findById(objectId(body.receiptId)).session(session);
       const note = text(body.note, 1000);
       const config = sepayConfig();
@@ -778,7 +770,7 @@ export async function orderCommand(
         );
       event(order, operation, `Ngoại lệ hủy: ${reason}; cần hoàn ${refundDue} đ.`, actor);
     } else if (operation === 'refund') {
-      if (!finance(actor)) throw new WorkflowProblem(403, 'Chỉ kế toán ghi hoàn tiền.');
+      if (!finance(actor)) throw new WorkflowProblem(403, 'Chỉ quản trị viên ghi hoàn tiền.');
       const amount = integer(body.amount, 1, order.refundDue);
       const reference = text(body.reference, 120);
       if (order.payments.some((p) => p.kind === 'refund' && p.reference === reference))

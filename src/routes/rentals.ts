@@ -7,7 +7,7 @@ import { createRental, listRentals, getRental, actRental } from '../controllers/
 
 const router = Router();
 router.use(requireClientPortal);
-router.use(protect, requireRole(0, 1, 2, 4, 5, 6));
+router.use(protect, requireRole(0, 1, 6));
 router.get('/', asyncHandler(listRentals));
 router.post('/', requireRole(6), asyncHandler(createRental));
 router.get('/:id', asyncHandler(getRental));

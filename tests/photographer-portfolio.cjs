@@ -129,7 +129,8 @@ test('personal portfolio drafts, public snapshots, uploads, ownership and versio
       assert.equal(state.content.bio, draft.bio);
       assert.equal(state.hasDraft, true);
       assert.equal((await get(`/api/photographers/${a.id}/portfolio`)).body.data.bio, original.bio);
-      const legacy = (await get(`/api/concepts/photographers/${a.id}`)).body.data;
+      assert.equal((await get(`/api/concepts/photographers/${a.id}`)).status, 401);
+      const legacy = (await get(`/api/concepts/photographers/${a.id}`, client)).body.data;
       assert.equal(legacy.bio, original.bio);
       assert.equal(legacy.draft, undefined);
       assert.equal(
@@ -199,7 +200,7 @@ test('personal portfolio drafts, public snapshots, uploads, ownership and versio
       assert.equal(publicState.title, state.content.title);
       assert.equal(publicState.portfolio[0].caption, 'Ảnh mới');
       assert.equal(
-        (await get(`/api/concepts/photographers/${a.id}`)).body.data.portraitUrl,
+        (await get(`/api/concepts/photographers/${a.id}`, client)).body.data.portraitUrl,
         uploaded,
       );
       assert.equal((await fetch(base + uploaded)).status, 200);

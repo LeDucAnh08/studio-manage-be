@@ -141,8 +141,8 @@ test('Drive albums: public selection, isolation, snapshots and workflow regressi
     }
     return Response.json({ files: [files.get('original_photo_001')], nextPageToken: 'second' });
   };
-  const [admin, photographer, owner, outsider, accountant, otherOwner] = await User.create(
-    [0, 3, 6, 3, 5, 6].map((role, i) => ({
+  const [admin, photographer, owner, outsider, unassignedStaff, otherOwner] = await User.create(
+    [0, 3, 6, 3, 3, 6].map((role, i) => ({
       username: `album.actor.${i}`,
       name: `Actor ${i}`,
       roles: [role],
@@ -220,9 +220,9 @@ test('Drive albums: public selection, isolation, snapshots and workflow regressi
       headers: {
         'Content-Type': 'application/json',
         'Idempotency-Key': key,
-        ...(actor
+        ...(actor || (route.startsWith('/public/') ? otherOwner : null)
           ? {
-              Authorization: `Bearer ${jwt.sign({ id: String(actor._id) }, process.env.JWT_SECRET)}`,
+              Authorization: `Bearer ${jwt.sign({ id: String((actor || otherOwner)._id) }, process.env.JWT_SECRET)}`,
             }
           : {}),
         ...(token ? { 'X-Album-Token': token } : {}),
@@ -280,7 +280,7 @@ test('Drive albums: public selection, isolation, snapshots and workflow regressi
     assert.equal(source.images.length, 2);
     assert.deepEqual(source.skipped, ['clip.mp4']);
     assert.equal(pageCalls, 2);
-    for (const actor of [null, outsider, accountant, otherOwner])
+    for (const actor of [null, outsider, unassignedStaff, otherOwner])
       assert.ok([401, 403, 404].includes((await call(base, actor)).status));
     await staff('configure', { title: 'Album lớp', limit: 1, folders: [link] });
     assert.equal(album.photos.length, 2);

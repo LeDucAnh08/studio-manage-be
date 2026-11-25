@@ -1,16 +1,14 @@
 import mongoose, { Document, Schema, Types } from 'mongoose';
 import bcrypt from 'bcryptjs';
 
-// 0: Superadmin | 1: Admin | 2: Sale | 3: Thợ chụp ảnh | 4: Cộng tác viên sale | 5: Kế toán
-export type UserRole = 0 | 1 | 2 | 3 | 4 | 5 | 6;
+// Role IDs are stable: retired IDs 2, 4 and 5 must never be reassigned.
+export type UserRole = 0 | 1 | 3 | 6;
+export const ACTIVE_ROLES: UserRole[] = [0, 1, 3, 6];
 
 export const ROLE_LABELS: Record<UserRole, string> = {
   0: 'Superadmin',
   1: 'Admin',
-  2: 'Sale',
   3: 'Thợ chụp ảnh',
-  4: 'Cộng tác viên sale',
-  5: 'Kế toán',
   6: 'Khách hàng',
 };
 
@@ -52,7 +50,7 @@ const userSchema = new Schema<IUser>(
       select: false,
     },
     password: { type: String, required: true, select: false },
-    roles: { type: [{ type: Number, enum: [0, 1, 2, 3, 4, 5, 6] }], default: [2] },
+    roles: { type: [{ type: Number, enum: ACTIVE_ROLES }], default: [6] },
     notificationReadAt: { type: Date },
     sourceAccountRequest: {
       type: Schema.Types.ObjectId,

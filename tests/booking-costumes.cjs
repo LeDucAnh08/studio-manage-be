@@ -189,10 +189,10 @@ test('booking costume holds share stock and transfer atomically on a real replic
     assert.equal(r.status, 201, JSON.stringify(r.body));
     return r.body.data._id;
   };
-  const catalog = () =>
+  const catalog = (actor = users.client) =>
     call(
       `/public/packages/${pack._id}/costumes?startAt=${encodeURIComponent(payload().startAt)}&endAt=${encodeURIComponent(payload().endAt)}`,
-      null,
+      actor,
     );
   const remaining = async () => {
     const { orders, schedules } = await loadRentalHolds([String(costume._id)]);
@@ -246,8 +246,9 @@ test('booking costume holds share stock and transfer atomically on a real replic
   });
 
   await t.test(
-    'public package catalog includes internal clothing, excludes accessories and keeps private stock data hidden',
+    'package catalog requires a session, includes clothing and hides accessories and private stock data',
     async () => {
+      assert.equal((await catalog(null)).status, 401);
       const r = await catalog();
       assert.equal(r.status, 200);
       assert.deepEqual(
@@ -269,11 +270,11 @@ test('booking costume holds share stock and transfer atomically on a real replic
       );
       const empty = await call(
         `/public/packages/${unconfigured._id}/costumes?startAt=${encodeURIComponent(payload().startAt)}&endAt=${encodeURIComponent(payload().endAt)}`,
-        null,
+        users.client,
       );
       assert.equal(empty.status, 200, JSON.stringify(empty.body));
       assert.deepEqual(empty.body.data, []);
-      assert.equal((await call(`/public/packages/${pack._id}/costumes`, null)).status, 400);
+      assert.equal((await call(`/public/packages/${pack._id}/costumes`, users.client)).status, 400);
     },
   );
   await t.test(

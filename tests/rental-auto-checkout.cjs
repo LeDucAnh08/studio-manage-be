@@ -58,10 +58,20 @@ test('automatic rental checkout reserves, expires, reconciles and locks paid ord
   uri.pathname = '/studio_sepay_rental_auto_test';
   await mongoose.connect(uri.toString());
   assert.equal(mongoose.connection.name, 'studio_sepay_rental_auto_test');
+  let server;
+  t.after(async () => {
+    if (server) {
+      server.closeAllConnections();
+      await new Promise((resolve) => server.close(resolve));
+    }
+    assert.equal(mongoose.connection.name, 'studio_sepay_rental_auto_test');
+    await mongoose.connection.dropDatabase();
+    await mongoose.disconnect();
+  });
   await mongoose.connection.dropDatabase();
   await Promise.all([Rental.createIndexes(), Receipt.createIndexes()]);
   const [admin, finance, client, other] = await User.create(
-    [0, 5, 6, 6].map((role, i) => ({
+    [0, 1, 6, 6].map((role, i) => ({
       username: 'rental.auto.' + i,
       name: 'QA actor',
       password: 'RentalTest123!',
@@ -86,15 +96,8 @@ test('automatic rental checkout reserves, expires, reconciles and locks paid ord
   app.use((error, req, res, next) =>
     res.status(error.status || 500).json({ message: error.message }),
   );
-  const server = app.listen(0, '127.0.0.1');
+  server = app.listen(0, '127.0.0.1');
   await new Promise((resolve) => server.once('listening', resolve));
-  t.after(async () => {
-    server.closeAllConnections();
-    await new Promise((resolve) => server.close(resolve));
-    assert.equal(mongoose.connection.name, 'studio_sepay_rental_auto_test');
-    await mongoose.connection.dropDatabase();
-    await mongoose.disconnect();
-  });
   const base = 'http://127.0.0.1:' + server.address().port;
   let sequence = 0,
     transferId = 1000;

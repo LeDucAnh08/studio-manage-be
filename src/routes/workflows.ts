@@ -7,10 +7,10 @@ import { listPhotographerOrders } from '../controllers/photographerOrdersControl
 import { listShootOrders } from '../controllers/shootOrdersController';
 
 const router = Router();
-router.get('/shoot-orders', protect, requireRole(0, 1, 2, 3, 5), asyncHandler(listShootOrders));
+router.get('/shoot-orders', protect, requireRole(0, 1, 3), asyncHandler(listShootOrders));
 
 router.get('/photographer-orders', protect, requireRole(3), asyncHandler(listPhotographerOrders));
 
-router.get('/', protect, requireRole(0, 1, 3, 5, 6), asyncHandler(listWorkflows));
+router.get('/', protect, requireRole(0, 1, 3, 6), asyncHandler(listWorkflows));
 
 export default router;

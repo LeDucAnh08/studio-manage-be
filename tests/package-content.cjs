@@ -156,7 +156,8 @@ test('public details, editor authorization and image updates remain consistent o
   );
   await t.test('only roles 0 and 1 can save content', async () => {
     assert.equal((await put({}, [], 0, null)).status, 401);
-    for (const role of [2, 3, 4, 5, 6]) assert.equal((await put({}, [], 0, role)).status, 403);
+    for (const role of [2, 4, 5]) assert.equal((await put({}, [], 0, role)).status, 401);
+    for (const role of [3, 6]) assert.equal((await put({}, [], 0, role)).status, 403);
     assert.equal((await put({ audience: 'Lớp cuối cấp' }, [], 0, 1)).status, 200);
     assert.equal(pkg.details.audience, 'Lớp cuối cấp');
   });

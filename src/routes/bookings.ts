@@ -132,7 +132,7 @@ router.post(
     sendResponse(res, 200, true, 'Đã đánh dấu đã đọc');
   }),
 );
-router.get('/workflow', requireRole(0, 1, 3, 5, 6), asyncHandler(listWorkflows));
+router.get('/workflow', requireRole(0, 1, 3, 6), asyncHandler(listWorkflows));
 router.get(
   '/',
   requireRole(0, 1, 6),

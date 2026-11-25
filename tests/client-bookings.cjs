@@ -189,7 +189,7 @@ test('Client registration and booking permissions over HTTP', async (t) => {
         await call('/users', admin, {
           username: 'Manual.Staff',
           password: 'test-pass-123',
-          roles: [2],
+            roles: [3],
           isActive: true,
           sourceAccountRequest: 'attacker-controlled',
         })

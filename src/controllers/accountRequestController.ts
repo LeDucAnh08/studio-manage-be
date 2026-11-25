@@ -7,7 +7,7 @@ import User, { type UserRole } from '../models/User';
 import { sendResponse } from '../utils/response';
 import { isDuplicateKeyError, normalizeUsername, trimmedText } from '../utils/input';
 
-const allowedRequestedRoles: UserRole[] = [2, 3, 4, 5];
+const allowedRequestedRoles: UserRole[] = [3];
 
 export const submit = async (req: Request, res: Response): Promise<void> => {
   const { username, name, phone, note, password, requestedRole } = req.body as {
@@ -148,6 +148,16 @@ export const review = async (req: Request, res: Response): Promise<void> => {
         return;
       }
       const assignedRoles = uniqueRoles ?? [request.requestedRole];
+      if (assignedRoles.some((role) => !allowedRequestedRoles.includes(role))) {
+        await releaseLock();
+        sendResponse(
+          res,
+          400,
+          false,
+          'Vai trò yêu cầu đã ngừng sử dụng. Vui lòng từ chối yêu cầu cũ.',
+        );
+        return;
+      }
       await User.collection.updateOne(
         { sourceAccountRequest: request._id },
         {

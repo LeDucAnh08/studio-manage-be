@@ -1,7 +1,7 @@
 import { Request, Response } from 'express';
 import { validationResult } from 'express-validator';
 import jwt from 'jsonwebtoken';
-import User from '../models/User';
+import User, { ACTIVE_ROLES } from '../models/User';
 import { sendResponse } from '../utils/response';
 import AccountRequest from '../models/AccountRequest';
 import { isDuplicateKeyError, normalizeUsername, trimmedText } from '../utils/input';
@@ -85,7 +85,7 @@ export const login = async (req: Request, res: Response): Promise<void> => {
     return;
   }
   const user = await User.findOne({ username: normalizedUsername }).select('+password');
-  if (!user || !user.isActive) {
+  if (!user || !user.isActive || !user.roles.some((role) => ACTIVE_ROLES.includes(role))) {
     sendResponse(res, 401, false, 'Invalid credentials');
     return;
   }

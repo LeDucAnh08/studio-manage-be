@@ -25,7 +25,7 @@ export async function simulateSandboxDeposit(
   )
     throw new WorkflowProblem(400, 'Mã thanh toán hoặc khóa gửi không hợp lệ.');
   const config = sepayConfig();
-  const staff = actor.roles.some((role) => [0, 1, 5].includes(role));
+  const staff = actor.roles.some((role) => [0, 1].includes(role));
   let payment;
   let createdAt: Date | undefined;
   if (reference.startsWith('CONC')) {

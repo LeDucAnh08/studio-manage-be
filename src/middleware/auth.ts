@@ -1,6 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
-import User from '../models/User';
+import User, { ACTIVE_ROLES } from '../models/User';
 
 interface JwtPayload {
   id: string;
@@ -18,7 +18,7 @@ export const protect = async (req: Request, res: Response, next: NextFunction): 
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET as string) as JwtPayload;
     const user = await User.findById(decoded.id).select('-password');
-    if (!user || !user.isActive) {
+    if (!user || !user.isActive || !user.roles.some((role) => ACTIVE_ROLES.includes(role))) {
       res.status(401).json({ message: 'User not found or inactive' });
       return;
     }

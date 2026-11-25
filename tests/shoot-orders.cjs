@@ -42,14 +42,19 @@ test('combined staff shoot orders preserve roles, both services, global paginati
     ['accountant', [5]],
     ['client', [6]],
     ['other', [4]],
-  ])
-    actors[name] = await User.create({
+  ]) {
+    const input = {
       username: 'shoot.' + name,
       name,
       roles,
       isActive: true,
       password: 'TestOnly123!',
-    });
+    };
+    if (roles.some(role => [2, 4, 5].includes(role))) {
+      actors[name] = new User(input);
+      await User.collection.insertOne(actors[name].toObject());
+    } else actors[name] = await User.create(input);
+  }
   const books = await Booking.create(
     Array.from({ length: 26 }, (_, index) => ({
       client: actors.client._id,
@@ -111,7 +116,7 @@ test('combined staff shoot orders preserve roles, both services, global paginati
   await t.test(
     'managers see pending yearbooks without workflows and concept orders in a single paginated feed',
     async () => {
-      for (const actor of ['admin', 'manager', 'accountant']) {
+      for (const actor of ['admin', 'manager']) {
         const result = await call(actor, '?limit=50');
         assert.equal(result.status, 200, JSON.stringify(result.body));
         assert.equal(result.body.pagination.total, 32);
@@ -153,10 +158,11 @@ test('combined staff shoot orders preserve roles, both services, global paginati
     },
   );
   await t.test(
-    'sales keep concept-only access; photographer and accountant combinations cannot broaden personal assignments',
+    'retired roles are denied; legacy role combinations cannot broaden photographer assignments',
     async () => {
-      assert.equal((await call('sale')).body.pagination.total, 6);
-      assert.equal((await call('sale', '?service=yearbook')).status, 403);
+      assert.equal((await call('sale')).status, 401);
+      assert.equal((await call('accountant')).status, 401);
+      assert.equal((await call('sale', '?service=yearbook')).status, 401);
       for (const actor of ['a', 'mixed']) {
         const result = await call(actor);
         assert.equal(result.status, 200);
@@ -171,12 +177,14 @@ test('combined staff shoot orders preserve roles, both services, global paginati
         );
       }
       const combinedRoles = await call('salesPhoto');
-      assert.equal(combinedRoles.body.pagination.total, 7);
+      assert.equal(combinedRoles.body.pagination.total, 2);
+      assert.ok(combinedRoles.body.data.every(row => row.payment === undefined && row.conceptNetReceived === undefined));
       assert.equal(
-        (await call('accountant', '?service=concept')).body.data[0].conceptNetReceived,
+        (await call('manager', '?service=concept')).body.data[0].conceptNetReceived,
         0,
       );
-      for (const actor of ['client', 'other']) assert.equal((await call(actor)).status, 403);
+      assert.equal((await call('client')).status, 403);
+      assert.equal((await call('other')).status, 401);
       assert.equal((await call(null)).status, 401);
     },
   );
@@ -193,7 +201,8 @@ test('combined staff shoot orders preserve roles, both services, global paginati
     try {
       assert.equal((await call('admin')).body.pagination.total, 26);
       assert.equal((await call('admin', '?service=concept')).status, 400);
-      assert.equal((await call('sale')).body.pagination.total, 0);
+      assert.equal((await call('sale')).status, 401);
+      assert.equal((await call('accountant')).status, 401);
     } finally {
       process.env.CONCEPT_BOOKING_ENABLED = 'true';
     }

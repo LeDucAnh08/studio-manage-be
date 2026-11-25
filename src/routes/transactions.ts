@@ -5,7 +5,7 @@ import * as c from '../controllers/transactionController';
 
 const router = Router();
 
-router.use(protect, requireRole(0, 1, 5));
+router.use(protect, requireRole(0, 1));
 
 router.get('/summary', c.getSummary);
 router.route('/').get(c.getAll).post(c.create);

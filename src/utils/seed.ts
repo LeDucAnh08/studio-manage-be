@@ -5,7 +5,7 @@ const envFile = process.env.NODE_ENV === 'production' ? '.env' : '.env';
 dotenv.config({ path: path.join(__dirname, '../..', envFile) });
 
 import mongoose from 'mongoose';
-import User from '../models/User';
+import User, { ACTIVE_ROLES } from '../models/User';
 import Category from '../models/Category';
 
 interface DefaultCategory {
@@ -33,7 +33,7 @@ const seed = async (): Promise<void> => {
 
   // Migrate: convert old single 'role' field to 'roles' array
   const oldUsers = await User.collection
-    .find({ role: { $exists: true }, roles: { $exists: false } })
+    .find({ role: { $in: ACTIVE_ROLES }, roles: { $exists: false } })
     .toArray();
   for (const u of oldUsers) {
     await User.collection.updateOne(
@@ -45,6 +45,8 @@ const seed = async (): Promise<void> => {
 
   const existingAdmin = await User.findOne({ username });
   if (existingAdmin) {
+    if (!existingAdmin.roles?.some((role) => role === 0 || role === 1))
+      throw new Error('Tên tài khoản seed đã tồn tại ngoài nhóm quản trị; không tự nâng quyền.');
     if (!existingAdmin.roles?.includes(0)) {
       await User.updateOne({ username }, { roles: [0] });
       console.log(`Superadmin "${username}" roles migrated to [0].`);

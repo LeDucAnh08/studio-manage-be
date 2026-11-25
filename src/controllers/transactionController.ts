@@ -6,7 +6,7 @@ import { notifyByRoles } from '../services/telegramService';
 import { resolveSeasonForDate } from '../utils/seasonCache';
 import { sendResponse } from '../utils/response';
 
-const isPrivileged = (roles: number[]): boolean => roles.some((r) => r === 0 || r === 1 || r === 5);
+const isPrivileged = (roles: number[]): boolean => roles.some((r) => r === 0 || r === 1);
 
 interface TransactionQuery {
   customer?: string;
@@ -100,7 +100,7 @@ export const create = async (req: Request, res: Response): Promise<void> => {
   const tx = await Transaction.create(payload);
   sendResponse(res, 201, true, 'Tạo giao dịch thành công', tx);
 
-  // Fire-and-forget: thông báo admin/kế toán khi có giao dịch mới
+  // Fire-and-forget: thông báo quản trị viên khi có giao dịch mới
   void (async () => {
     try {
       const typeLabel = tx.type === 'income' ? '💰 Thu' : '💸 Chi';
@@ -110,8 +110,8 @@ export const create = async (req: Request, res: Response): Promise<void> => {
         `🔔 <b>Giao dịch mới</b>\n` +
         `${typeLabel}: <b>${amount} đ</b>\n` +
         `Người tạo: ${creatorName}${tx.description ? `\nMô tả: ${tx.description}` : ''}`;
-      // Thông báo cho Superadmin (0), Admin (1), Kế toán (5)
-      await notifyByRoles([0, 1, 5], text);
+      // Thông báo cho Superadmin (0), Admin (1)
+      await notifyByRoles([0, 1], text);
     } catch (e) {
       console.error('[Telegram] transaction notification failed:', e);
     }

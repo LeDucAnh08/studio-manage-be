@@ -25,6 +25,8 @@ import { commandKey, conceptOrderStatuses, integer } from '../services/conceptPo
 import { WorkflowProblem } from '../services/workflowTransactions';
 import { activeConceptHoldFilter } from '../services/conceptHolds';
 import { createRateLimit } from '../middleware/authRateLimit';
+import { backgroundJobsEnabled } from '../config/queue';
+import { submitAlbumOperation, operationDto } from '../services/backgroundOperations';
 
 const router = Router();
 router.use(conceptGate, protect);
@@ -37,7 +39,7 @@ router.get(
       limit = integer(Number(req.query.limit || 20), 1, 100);
     const actor = req.user;
     let scope: any;
-    if (admin(actor) || actor.roles.some((r: number) => [2, 5].includes(r))) scope = {};
+    if (admin(actor)) scope = {};
     else if (actor.roles.includes(3))
       scope = { $or: [{ photographer: actor._id }, { editor: actor._id }] };
     else if (actor.roles.includes(6)) scope = { client: actor._id };
@@ -86,13 +88,11 @@ router.get(
 router.get(
   '/calendar-holds',
   conceptHandler(async (req, res) => {
-    if (!req.user.roles.some((r: number) => [0, 1, 2, 3].includes(r)))
+    if (!req.user.roles.some((r: number) => [0, 1, 3].includes(r)))
       throw new WorkflowProblem(403, 'Chỉ nhân sự xem lịch giữ chỗ.');
     const rows = await Order.find({
       ...activeConceptHoldFilter(),
-      ...(req.user.roles.includes(3) && !admin(req.user) && !req.user.roles.includes(2)
-        ? { photographer: req.user._id }
-        : {}),
+      ...(req.user.roles.includes(3) && !admin(req.user) ? { photographer: req.user._id } : {}),
     })
       .select('startAt endAt reservation snapshot photographer contactName')
       .populate('photographer', 'name username')
@@ -146,6 +146,20 @@ router.get(
 router.post(
   '/:id/album/:operation',
   conceptHandler(async (req, res) => {
+    if (backgroundJobsEnabled() && req.params.operation === 'sync') {
+      const job = await submitAlbumOperation(
+        'concept',
+        req.params.id,
+        req.user!,
+        'sync',
+        req.body,
+        req.get('Idempotency-Key') || '',
+      );
+      sendResponse(res, 202, true, 'Đã nhận yêu cầu đồng bộ ảnh.', {
+        backgroundOperation: operationDto(job),
+      });
+      return;
+    }
     const result = await albumCommand(
       req.params.id,
       req.user,
