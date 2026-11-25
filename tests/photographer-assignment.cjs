@@ -25,7 +25,6 @@ const DATABASE = 'studio_photographer_assignment_test';
 const google = require('../src/services/googleSheetService');
 google.createFolderAndLog = async () => null;
 google.deleteFolderAndRow = async () => undefined;
-require('../src/services/telegramService').notifyUsers = async () => undefined;
 
 test('photographer assignment, availability and personal busy time', async (t) => {
   const uri = new URL(process.env.MONGO_TEST_URI || process.env.MONGO_URI);

@@ -1,7 +1,7 @@
 import { Request, Response } from 'express';
 import { validationResult } from 'express-validator';
 import jwt from 'jsonwebtoken';
-import User, { ACTIVE_ROLES } from '../models/User';
+import User, { ACTIVE_ROLES, USER_PUBLIC_FIELDS } from '../models/User';
 import { sendResponse } from '../utils/response';
 import AccountRequest from '../models/AccountRequest';
 import { isDuplicateKeyError, normalizeUsername, trimmedText } from '../utils/input';
@@ -162,6 +162,6 @@ export const updateProfile = async (req: Request, res: Response): Promise<void> 
     req.user!._id,
     { name },
     { new: true, runValidators: true },
-  ).select('-password');
+  ).select(USER_PUBLIC_FIELDS);
   sendResponse(res, 200, true, 'Cập nhật thành công', user);
 };

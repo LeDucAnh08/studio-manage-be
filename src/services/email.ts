@@ -5,7 +5,7 @@ import User from '../models/User';
 import Booking from '../models/Booking';
 import ConceptOrder from '../models/ConceptOrder';
 import BookingWorkflow from '../models/BookingWorkflow';
-import { depositPaymentDto, localProviderTestEnabled } from './depositPayment';
+import { depositPaymentDto, mainDatabaseProviderTestEnabled } from './depositPayment';
 import { backgroundJobsEnabled } from '../config/queue';
 
 export const emailHash = (value: string) => createHash('sha256').update(value).digest('hex');
@@ -54,7 +54,7 @@ export function emailConfig() {
     (isolated ||
       (process.env.SEPAY_MODE === 'sandbox' &&
         process.env.SEPAY_ENABLED === 'true' &&
-        !localProviderTestEnabled()))
+        !mainDatabaseProviderTestEnabled()))
   )
     throw new Error('Sandbox cannot send real email');
   const from = process.env.EMAIL_FROM || '';

@@ -9,7 +9,6 @@ import type { ICustomer } from '../models/Customer';
 import User, { type IUser } from '../models/User';
 import type { ISeason } from '../models/Season';
 import type { ScheduleResponse } from '../types/dto';
-import { notifyUsers } from '../services/telegramService';
 import { createFolderAndLog, deleteFolderAndRow } from '../services/googleSheetService';
 import { resolveSeasonForDate } from '../utils/seasonCache';
 import { sendResponse } from '../utils/response';
@@ -417,7 +416,7 @@ export const create = async (req: Request, res: Response): Promise<void> => {
     schedule = await Schedule.create(payload);
   }
 
-  // Lấy bản populate để dựng tên folder + nội dung thông báo
+  // Lấy bản populate để dựng tên folder Drive
   const full = await Schedule.findById(schedule._id)
     .populate<{ customer: Pick<ICustomer, 'className' | 'school'> }>('customer', 'className school')
     .populate<{ leadPhotographer: Pick<IUser, 'name'> }>('leadPhotographer', 'name')
@@ -426,12 +425,6 @@ export const create = async (req: Request, res: Response): Promise<void> => {
     .lean();
 
   const dateStr = new Date(schedule.shootDate).toLocaleDateString('vi-VN');
-  const ids = full
-    ? [full.leadPhotographer, ...full.supportPhotographers]
-        .filter(Boolean)
-        .map((p) => String((p as { _id?: unknown })?._id ?? p))
-    : [];
-
   // ── Tạo folder Drive + ghi Sheet ĐỒNG BỘ, lưu driveFolderUrl trước khi trả về ──
   if (full) {
     try {
@@ -467,28 +460,6 @@ export const create = async (req: Request, res: Response): Promise<void> => {
 
   // Trả response sau khi đã có driveFolderUrl (nếu tạo folder thành công)
   sendResponse(res, 201, true, 'Tạo lịch chụp thành công', schedule);
-
-  // ── Thông báo Telegram chạy nền (không chặn response) ──
-  if (ids.length) {
-    const timeStr = schedule.startTime ? ` • ${schedule.startTime}` : '';
-    const locationStr = schedule.location ? `\n📍 ${schedule.location}` : '';
-    const customerName = full?.customer?.className ?? 'Khách hàng';
-    const text =
-      `📅 <b>Lịch chụp mới được tạo</b>\n` +
-      `👥 ${customerName}\n` +
-      `📆 ${dateStr}${timeStr}${locationStr}`;
-    const folderUrl = schedule.driveFolderUrl;
-    void (async () => {
-      try {
-        await notifyUsers(ids, text);
-        if (folderUrl) {
-          await notifyUsers(ids, `📁 <b>Folder ảnh đã tạo</b>\n🔗 ${folderUrl}`);
-        }
-      } catch (e) {
-        console.error('[Schedule] gửi thông báo Telegram thất bại:', e);
-      }
-    })();
-  }
 };
 
 export const update = async (req: Request, res: Response): Promise<void> => {
@@ -523,14 +494,12 @@ export const update = async (req: Request, res: Response): Promise<void> => {
     'supportPhotographers',
     'status',
   ];
-  let prevSchedule: any;
   let schedule: any;
   const updateInTransaction = async (session?: ClientSession) => {
     const existingQuery = Schedule.findById(req.params.id);
     if (session) existingQuery.session(session);
     const existing = await existingQuery;
     if (!existing) throw new WorkflowProblem(404, 'Not found');
-    prevSchedule = existing.toObject();
     if (
       'bookedBy' in updateData &&
       !(await validCoordinator(updateData.bookedBy, existing.bookedBy, session))
@@ -586,116 +555,6 @@ export const update = async (req: Request, res: Response): Promise<void> => {
     return;
   }
   sendResponse(res, 200, true, 'Cập nhật thành công', schedule);
-
-  if (!prevSchedule) return;
-
-  void (async () => {
-    try {
-      const full = await Schedule.findById(schedule._id)
-        .populate<{
-          customer: Pick<ICustomer, 'className' | 'school'>;
-        }>('customer', 'className school')
-        .lean();
-      if (!full) return;
-
-      const dateStr = new Date(full.shootDate).toLocaleDateString('vi-VN');
-      const customerName = full.customer?.className ?? 'Khách hàng';
-      const customerSchool = full.customer?.school || '';
-      const timeStr = full.startTime ? ` • ${full.startTime}` : '';
-      const locationStr = full.location ? `\n📍 ${full.location}` : '';
-
-      // ── 1. Phát hiện thay đổi thợ chụp ──────────────────────────────────
-      // Chỉ tính thay đổi khi client thực sự gửi field tương ứng. Nếu chỉ cập
-      // nhật field khác (vd: contractUrl) thì giữ nguyên thợ cũ, tránh báo nhầm
-      // "được gỡ khỏi lịch chụp".
-      const leadProvided = 'leadPhotographer' in req.body;
-      const supportsProvided = Array.isArray(req.body?.supportPhotographers);
-
-      const prevLead = prevSchedule.leadPhotographer?.toString() ?? null;
-      const newLead = leadProvided
-        ? req.body.leadPhotographer
-          ? String(req.body.leadPhotographer)
-          : null
-        : prevLead;
-
-      const prevSupports = (prevSchedule.supportPhotographers ?? []).map((id: any) =>
-        id.toString(),
-      );
-      const newSupports: string[] = supportsProvided
-        ? req.body.supportPhotographers.map(String)
-        : prevSupports;
-
-      // Thợ mới được thêm vào (chưa có trong lịch trước)
-      const addedLead =
-        newLead && newLead !== prevLead && !prevSupports.includes(newLead) ? [newLead] : [];
-      const addedSupports = newSupports.filter(
-        (id) => id !== prevLead && !prevSupports.includes(id),
-      );
-      const addedIds = [...new Set([...addedLead, ...addedSupports])];
-
-      // Thợ bị gỡ ra
-      const removedLead =
-        prevLead && prevLead !== newLead && !newSupports.includes(prevLead) ? [prevLead] : [];
-      const removedSupports = prevSupports.filter(
-        (id: string) => id !== newLead && !newSupports.includes(id),
-      );
-      const removedIds = [...new Set([...removedLead, ...removedSupports])];
-
-      if (addedIds.length) {
-        const text =
-          `📅 <b>Bạn được phân công lịch chụp</b>\n` +
-          `👥 ${customerName} - ${customerSchool}\n` +
-          `📆 ${dateStr}${timeStr}${locationStr}`;
-        await notifyUsers(addedIds, text);
-      }
-      if (removedIds.length) {
-        const text =
-          `🗑 <b>Bạn đã được gỡ khỏi lịch chụp</b>\n` +
-          `👥 ${customerName} - ${customerSchool}` +
-          `\n📆 ${dateStr}${timeStr}${locationStr}`;
-        await notifyUsers(removedIds, text);
-      }
-
-      // ── 2. Thông báo đổi status cho tất cả thợ hiện tại ─────────────────
-      const newStatus = req.body?.status as string | undefined;
-      if (newStatus && newStatus !== prevSchedule.status) {
-        const statusLabel: Record<string, string> = {
-          confirmed: '✅ Đã xác nhận',
-          completed: '🎉 Hoàn thành',
-          cancelled: '❌ Đã huỷ',
-          pending: '⏳ Chờ xác nhận',
-        };
-        const text =
-          `🔔 <b>Lịch chụp cập nhật trạng thái</b>\n` +
-          `👥 ${customerName} - ${customerSchool}\n` +
-          `📆 ${dateStr}${timeStr}${locationStr}\n` +
-          `Trạng thái: ${statusLabel[newStatus] ?? newStatus}`;
-
-        const currentIds = [full.leadPhotographer, ...full.supportPhotographers]
-          .filter(Boolean)
-          .map(String);
-        if (currentIds.length) await notifyUsers(currentIds, text);
-      }
-
-      // ── 3. Thông báo tạo hợp đồng ──────────────────────────────────────
-      const newContractUrl = req.body?.contractUrl as string | undefined;
-      const prevContractUrl = prevSchedule.contractUrl ?? null;
-      if (newContractUrl && newContractUrl !== prevContractUrl) {
-        const text =
-          `📄 <b>Hợp đồng đã được tạo</b>\n` +
-          `👥 ${customerName} - ${customerSchool}\n` +
-          `📆 ${dateStr}${timeStr}${locationStr}\n` +
-          `🔗 ${newContractUrl}`;
-
-        const currentIds = [full.leadPhotographer, ...full.supportPhotographers]
-          .filter(Boolean)
-          .map(String);
-        if (currentIds.length) await notifyUsers(currentIds, text);
-      }
-    } catch (e) {
-      console.error('[Telegram] schedule update notification failed:', e);
-    }
-  })();
 };
 
 export const remove = async (req: Request, res: Response): Promise<void> => {

@@ -95,3 +95,68 @@ test('startup honors its explicit database URI and keeps sandbox email isolated'
     Object.assign(process.env, saved);
   }
 });
+
+test('Atlas main database requires both opt-ins and keeps email and payment simulation guards', async () => {
+  const saved = { ...process.env }, originalName = mongoose.connection.name, originalHost = mongoose.connection.host;
+  try {
+    Object.assign(process.env, {
+      NODE_ENV: 'development', SEPAY_ENABLED: 'true', SEPAY_MODE: 'sandbox',
+      CLIENT_WORKFLOW_ENABLED: 'true', SEPAY_TEST_ON_MAIN_DB: 'true', SEPAY_TEST_ON_ATLAS: 'true',
+      SEPAY_DEMO_UI: 'true', SEPAY_SANDBOX_DATABASE: 'studio_sepay_sandbox',
+      SEPAY_WEBHOOK_SECRET: 'atlas-config-check-secret-at-least-32-characters',
+      PAYMENT_BANK_CODE: 'MBBank', SEPAY_BANK_GATEWAY: 'MBBank', PAYMENT_BANK_NAME: 'QA Bank',
+      PAYMENT_ACCOUNT_NAME: 'QA Test', PAYMENT_ACCOUNT_NUMBER: 'SBTEST001',
+      EMAIL_ENABLED: 'true', EMAIL_MODE: 'resend', EMAIL_FROM: 'Yume <notifications@example.test>',
+      EMAIL_PUBLIC_URL: 'http://localhost:4001', RESEND_API_KEY: 'config-check-placeholder',
+      JWT_SECRET: 'atlas-config-check-only-secret',
+    });
+    mongoose.connection.name = 'studio_db';
+    const assertBlocked = () => {
+      assert.throws(() => sepayConfig(), /database riêng/);
+      assert.throws(() => emailConfig());
+    };
+    for (const host of ['cluster0.example.mongodb.net', 'ac-example-shard-00-00.example.mongodb.net']) {
+      mongoose.connection.host = host;
+      assert.equal(sepayConfig().mode, 'sandbox');
+      assert.equal(emailConfig().mode, 'resend');
+      assert.equal(sandboxUiEnabled(), false);
+      await assert.rejects(simulateSandboxDeposit({ _id: new mongoose.Types.ObjectId(), roles: [6] }, 'RENT0123456789ABCDEF', 'atlas-provider-test'), (error) => error.status === 404);
+    }
+    for (const key of ['SEPAY_TEST_ON_MAIN_DB', 'SEPAY_TEST_ON_ATLAS']) {
+      for (const value of ['false', '']) {
+        process.env[key] = value;
+        assertBlocked();
+      }
+      process.env[key] = 'true';
+    }
+    // HTTPS avoids letting the public URL guard mask the database/environment checks.
+    process.env.EMAIL_PUBLIC_URL = 'https://studio.example';
+    for (const environment of ['production', 'test', '']) {
+      process.env.NODE_ENV = environment;
+      assertBlocked();
+    }
+    process.env.NODE_ENV = 'development';
+    for (const host of ['remote.example', 'mongodb.net', 'cluster.mongodb.net.evil.example', 'cluster.evilmongodb.net', '']) {
+      mongoose.connection.host = host;
+      assertBlocked();
+    }
+    mongoose.connection.host = 'cluster0.example.mongodb.net';
+    for (const database of ['studio_email_test', 'another_db', '']) {
+      mongoose.connection.name = database;
+      assertBlocked();
+    }
+    mongoose.connection.name = 'studio_sepay_sandbox';
+    assert.throws(() => emailConfig(), /Sandbox cannot send real email/);
+    assert.equal(sandboxUiEnabled(), false);
+    process.env.SEPAY_ENABLED = 'false';
+    assert.throws(() => emailConfig(), /Sandbox cannot send real email/);
+    mongoose.connection.name = 'studio_db';
+    process.env.SEPAY_ENABLED = 'true';
+    process.env.EMAIL_MODE = 'test';
+    assert.throws(() => emailConfig(), /isolated/);
+  } finally {
+    mongoose.connection.name = originalName; mongoose.connection.host = originalHost;
+    for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
+    Object.assign(process.env, saved);
+  }
+});

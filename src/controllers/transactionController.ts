@@ -2,11 +2,11 @@ import { Request, Response } from 'express';
 import Transaction from '../models/Transaction';
 import Season from '../models/Season';
 import type { TransactionResponse, TransactionSummaryRow } from '../types/dto';
-import { notifyByRoles } from '../services/telegramService';
 import { resolveSeasonForDate } from '../utils/seasonCache';
 import { sendResponse } from '../utils/response';
 
 const isPrivileged = (roles: number[]): boolean => roles.some((r) => r === 0 || r === 1);
+const USER_FIELDS = '_id username name roles isActive createdAt';
 
 interface TransactionQuery {
   customer?: string;
@@ -54,7 +54,6 @@ export const getAll = async (req: Request, res: Response): Promise<void> => {
     }
   }
   const skip = (Number(page) - 1) * Number(limit);
-  const USER_FIELDS = '_id username name roles isActive createdAt';
   const CUSTOMER_FIELDS =
     '_id className school contactName contactPhone contactAddress total totalMale totalFemale notes createdAt';
   const [data, total] = await Promise.all([
@@ -75,7 +74,7 @@ export const getOne = async (req: Request, res: Response): Promise<void> => {
   const tx = await Transaction.findById(req.params.id)
     .populate('customer')
     .populate('categoryId')
-    .populate('createdBy')
+    .populate('createdBy', USER_FIELDS)
     .lean<TransactionResponse | null>();
   if (!tx) {
     sendResponse(res, 404, false, 'Not found');
@@ -99,23 +98,6 @@ export const create = async (req: Request, res: Response): Promise<void> => {
   }
   const tx = await Transaction.create(payload);
   sendResponse(res, 201, true, 'Tạo giao dịch thành công', tx);
-
-  // Fire-and-forget: thông báo quản trị viên khi có giao dịch mới
-  void (async () => {
-    try {
-      const typeLabel = tx.type === 'income' ? '💰 Thu' : '💸 Chi';
-      const amount = tx.amount?.toLocaleString('vi-VN') ?? '0';
-      const creatorName = req.user!.name ?? req.user!.username;
-      const text =
-        `🔔 <b>Giao dịch mới</b>\n` +
-        `${typeLabel}: <b>${amount} đ</b>\n` +
-        `Người tạo: ${creatorName}${tx.description ? `\nMô tả: ${tx.description}` : ''}`;
-      // Thông báo cho Superadmin (0), Admin (1)
-      await notifyByRoles([0, 1], text);
-    } catch (e) {
-      console.error('[Telegram] transaction notification failed:', e);
-    }
-  })();
 };
 
 export const update = async (req: Request, res: Response): Promise<void> => {

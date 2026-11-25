@@ -18,12 +18,14 @@ export interface DepositPaymentSnapshot {
 }
 
 export const sepayEnabled = () => process.env.SEPAY_ENABLED === 'true';
-// Provider Test on the existing local database is distinct from an isolated sandbox.
-export const localProviderTestEnabled = () =>
+// Atlas requires a separate opt-in; isolated sandbox databases never qualify.
+export const mainDatabaseProviderTestEnabled = () =>
   process.env.SEPAY_TEST_ON_MAIN_DB === 'true' &&
   process.env.NODE_ENV === 'development' &&
   mongoose.connection.name === 'studio_db' &&
-  ['localhost', '127.0.0.1', '::1', '[::1]'].includes(mongoose.connection.host || '');
+  (['localhost', '127.0.0.1', '::1', '[::1]'].includes(mongoose.connection.host || '') ||
+    (process.env.SEPAY_TEST_ON_ATLAS === 'true' &&
+      /^[a-z0-9-]+(?:\.[a-z0-9-]+)*\.mongodb\.net$/i.test(mongoose.connection.host || '')));
 export const sandboxUiEnabled = () =>
   process.env.SEPAY_DEMO_UI === 'true' &&
   process.env.NODE_ENV === 'development' &&
@@ -60,13 +62,13 @@ export function sepayConfig() {
   }
   if (
     mode === 'sandbox' &&
-    !localProviderTestEnabled() &&
+    !mainDatabaseProviderTestEnabled() &&
     (!process.env.SEPAY_SANDBOX_DATABASE?.startsWith('studio_sepay_') ||
       mongoose.connection.name !== process.env.SEPAY_SANDBOX_DATABASE)
   )
     throw new WorkflowProblem(
       503,
-      'SePay sandbox cần database riêng studio_sepay_* hoặc bật Test mode rõ ràng trên studio_db local.',
+      'SePay sandbox cần database riêng studio_sepay_* hoặc bật Test mode rõ ràng trên studio_db (Atlas cần thêm SEPAY_TEST_ON_ATLAS=true).',
     );
   if (mode === 'live' && mongoose.connection.name?.startsWith('studio_sepay_'))
     throw new WorkflowProblem(503, 'Không được nhận tiền thật trong database sandbox.');

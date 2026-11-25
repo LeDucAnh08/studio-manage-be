@@ -1,6 +1,6 @@
 import { Request, Response } from 'express';
 import { isValidObjectId } from 'mongoose';
-import User, { ACTIVE_ROLES } from '../models/User';
+import User, { ACTIVE_ROLES, USER_PUBLIC_FIELDS } from '../models/User';
 import type { UserRole } from '../models/User';
 import { sendResponse } from '../utils/response';
 import { isDuplicateKeyError, normalizeUsername, trimmedText } from '../utils/input';
@@ -40,7 +40,7 @@ export const getCoordinators = async (_req: Request, res: Response): Promise<voi
   sendResponse(res, 200, true, 'OK', users);
 };
 export const getAll = async (_req: Request, res: Response): Promise<void> => {
-  const users = await User.find().sort({ createdAt: -1 }).lean();
+  const users = await User.find().select(USER_PUBLIC_FIELDS).sort({ createdAt: -1 }).lean();
   sendResponse(res, 200, true, 'OK', users);
 };
 
@@ -49,7 +49,7 @@ export const getOne = async (req: Request, res: Response): Promise<void> => {
     sendResponse(res, 404, false, 'Not found');
     return;
   }
-  const user = await User.findById(req.params.id).lean();
+  const user = await User.findById(req.params.id).select(USER_PUBLIC_FIELDS).lean();
   if (!user) {
     sendResponse(res, 404, false, 'Not found');
     return;

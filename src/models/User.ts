@@ -5,6 +5,10 @@ import bcrypt from 'bcryptjs';
 export type UserRole = 0 | 1 | 3 | 6;
 export const ACTIVE_ROLES: UserRole[] = [0, 1, 3, 6];
 
+// Explicitly exclude legacy or internal fields even before a database cleanup runs.
+export const USER_PUBLIC_FIELDS =
+  '_id username name roles isActive email emailVerifiedAt notificationReadAt sourceAccountRequest createdAt updatedAt __v';
+
 export const ROLE_LABELS: Record<UserRole, string> = {
   0: 'Superadmin',
   1: 'Admin',
@@ -29,10 +33,6 @@ export interface IUser extends Document {
   };
   notificationReadAt?: Date;
   sourceAccountRequest?: Types.ObjectId;
-  telegramId?: string;
-  telegramUsername?: string;
-  telegramLinkToken?: string;
-  telegramLinkTokenExpiry?: Date;
   comparePassword(plain: string): Promise<boolean>;
 }
 
@@ -59,10 +59,6 @@ const userSchema = new Schema<IUser>(
       sparse: true,
     },
     isActive: { type: Boolean, default: true },
-    telegramId: { type: String, default: null, sparse: true },
-    telegramUsername: { type: String, default: null },
-    telegramLinkToken: { type: String, default: null, select: false },
-    telegramLinkTokenExpiry: { type: Date, default: null, select: false },
   },
   { timestamps: true },
 );
