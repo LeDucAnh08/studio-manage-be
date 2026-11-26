@@ -20,7 +20,9 @@ import {
   deliveryFile,
   deliveryPhotoDto,
   removeDeliveryFiles,
+  sendDeliveryPhoto,
   ensureDeliveryStorage,
+  validateReplacementOriginals,
 } from '../services/bookingDelivery';
 import { bookingDrivePhoto, readAlbumPhoto } from '../services/bookingAlbum';
 
@@ -68,6 +70,7 @@ router.get(
     if (!access.staff) throw new WorkflowProblem(403, 'Chỉ ekip được xem ảnh chưa bàn giao.');
     const photos = await Photo.find({
       booking: req.params.id,
+      originalPhotoId: { $exists: false },
       publishedVersions: { $size: 0 },
       deletedAt: { $exists: false },
     }).sort({ createdAt: 1, _id: 1 });
@@ -82,6 +85,12 @@ router.post(
     const key = req.get('Idempotency-Key') || '';
     if (!/^[A-Za-z0-9._:-]{8,128}$/.test(key))
       throw new WorkflowProblem(400, 'Thiếu mã tải ảnh hợp lệ.');
+    const originalPhotoId = req.query.originalPhotoId;
+    if (
+      originalPhotoId !== undefined &&
+      (typeof originalPhotoId !== 'string' || !/^[a-f0-9]{24}$/.test(originalPhotoId))
+    )
+      throw new WorkflowProblem(400, 'Mã ảnh gốc không hợp lệ.');
     await ensureDeliveryStorage();
     if (active >= 2) {
       res.setHeader('Retry-After', '3');
@@ -124,6 +133,7 @@ router.post(
         if (
           previous.deletedAt ||
           previous.sha256 !== sha256 ||
+          String(previous.originalPhotoId ?? '') !== (originalPhotoId ?? '') ||
           String(previous.uploadedBy) !== String(req.user!._id)
         )
           throw new WorkflowProblem(
@@ -170,14 +180,34 @@ router.post(
           if (
             duplicate.deletedAt ||
             duplicate.sha256 !== sha256 ||
+            String(duplicate.originalPhotoId ?? '') !== (originalPhotoId ?? '') ||
             String(duplicate.uploadedBy) !== String(req.user!._id)
           )
             throw new WorkflowProblem(409, 'Mã tải ảnh đã được sử dụng.');
           return duplicate;
         }
+        if (originalPhotoId) {
+          await validateReplacementOriginals(req.params.id, [originalPhotoId], session);
+          await Photo.updateMany(
+            {
+              booking: req.params.id,
+              originalPhotoId,
+              publishedVersions: { $size: 0 },
+              deletedAt: { $exists: false },
+            },
+            { $set: { deletedAt: new Date() } },
+            { session },
+          );
+        }
         const existing = await Photo.find({ booking: req.params.id, deletedAt: { $exists: false } })
-          .select('bytes')
+          .select('bytes originalPhotoId publishedVersions')
           .session(session);
+        if (
+          originalPhotoId &&
+          existing.filter((item) => item.originalPhotoId && !item.publishedVersions.length)
+            .length >= 500
+        )
+          throw new WorkflowProblem(409, 'Mỗi bản bàn giao nhận tối đa 500 ảnh chỉnh sửa.');
         if (
           existing.length >= 1000 ||
           existing.reduce((sum, item) => sum + item.bytes, bytes) > 2 * 1024 ** 3
@@ -188,6 +218,7 @@ router.post(
             {
               _id: id,
               booking: req.params.id,
+              originalPhotoId,
               uploadedBy: req.user!._id,
               uploadKey: key,
               sha256,
@@ -251,17 +282,7 @@ router.get(
       ...(!access.staff ? { 'publishedVersions.0': { $exists: true } } : {}),
     });
     if (!photo) throw new WorkflowProblem(404, 'Không tìm thấy ảnh.');
-    const file = deliveryFile(String(photo._id), req.query.size === 'thumb');
-    try {
-      await stat(file);
-    } catch {
-      throw new WorkflowProblem(404, 'Ảnh hiện chưa sẵn sàng.');
-    }
-    res.setHeader('Cache-Control', 'no-store');
-    res.setHeader('X-Content-Type-Options', 'nosniff');
-    await new Promise<void>((resolve, reject) =>
-      res.sendFile(file, (error) => (error ? reject(error) : resolve())),
-    );
+    await sendDeliveryPhoto(res, String(photo._id), req.query.size === 'thumb');
   }),
 );
 router.delete(

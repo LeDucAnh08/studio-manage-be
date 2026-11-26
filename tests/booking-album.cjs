@@ -1,5 +1,7 @@
 // HTTP + replica-set integration. Google HTTP is stubbed; MongoDB and authorization are real.
 const path = require('node:path');
+const { mkdtemp, rm } = require('node:fs/promises');
+const { tmpdir } = require('node:os');
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
 const { createHash } = require('node:crypto');
@@ -218,7 +220,7 @@ test('Drive albums: public selection, isolation, snapshots and workflow regressi
     actualFetch(`http://127.0.0.1:${server.address().port}${route}`, {
       method: data ? 'POST' : 'GET',
       headers: {
-        'Content-Type': 'application/json',
+        ...(data instanceof FormData ? {} : { 'Content-Type': 'application/json' }),
         'Idempotency-Key': key,
         ...(actor || (route.startsWith('/public/') ? otherOwner : null)
           ? {
@@ -227,7 +229,7 @@ test('Drive albums: public selection, isolation, snapshots and workflow regressi
           : {}),
         ...(token ? { 'X-Album-Token': token } : {}),
       },
-      ...(data ? { body: JSON.stringify(data) } : {}),
+      ...(data ? { body: data instanceof FormData ? data : JSON.stringify(data) } : {}),
     });
   const ok = async (response) => {
     const body = await response.json();
@@ -622,10 +624,125 @@ test('Drive albums: public selection, isolation, snapshots and workflow regressi
       ).status,
       409,
     );
-    const accepted = await ok(await act('delivery.accept', { deliveryVersion: 2 }, owner));
-    assert.equal(accepted.workflow.lifecycle, 'accepted');
-    assert.equal(accepted.workflow.deliveryHistory.length, 2);
   });
+  await t.test(
+    'per-photo uploads get published in place and carry through successive deliveries',
+    async () => {
+      const storage = await mkdtemp(path.join(tmpdir(), 'studio-album-replacements-'));
+      process.env.PRIVATE_DELIVERY_DIR = storage;
+      t.after(() => rm(storage, { recursive: true, force: true }));
+      await ok(
+        await act('delivery.revision.start', {
+          deliveryVersion: 2,
+          note: 'Sửa riêng ảnh khách yêu cầu',
+        }),
+      );
+      await ok(await act('progress.update', { status: 'editing' }));
+
+      const originals = album.photos.filter((photo) => photo.deliveryVersion === 0);
+      const first = originals.find((photo) => photo.selected);
+      const second = originals.find((photo) => !photo.selected);
+      const corrected = await sharp({
+        create: { width: 45, height: 60, channels: 3, background: '#cd2235' },
+      })
+        .png()
+        .toBuffer();
+      const upload = async (original, actor = photographer, key) => {
+        const data = new FormData();
+        data.append('photo', new Blob([corrected], { type: 'image/png' }), 'renamed-image.png');
+        return call(
+          `/bookings/${booking._id}/delivery/photos?originalPhotoId=${original.id}`,
+          actor,
+          data,
+          undefined,
+          key,
+        );
+      };
+      assert.equal((await upload(first, owner)).status, 403);
+      assert.equal((await upload(second)).status, 409);
+
+      const sentUpload = await upload(first, photographer, 'photo-target-retry-key');
+      assert.equal(sentUpload.status, 201);
+      const firstDraft = (await sentUpload.json()).data;
+      assert.equal(firstDraft.originalPhotoId, first.id);
+      assert.equal(
+        (await ok(await upload(first, photographer, 'photo-target-retry-key'))).id,
+        firstDraft.id,
+      );
+      assert.equal((await upload(second, photographer, 'photo-target-retry-key')).status, 409);
+      assert.equal((await ok(await call(base, photographer))).replacements[0].deliveryVersion, -1);
+      assert.equal((await ok(await call(base, owner))).replacements, undefined);
+      const guestImage = (id, token = shareToken) =>
+        call(`${publicBase()}/photos/local-${id}`, null, undefined, token);
+      assert.equal((await guestImage(firstDraft.id)).status, 404);
+      assert.equal((await call(`${base}/photos/local-${firstDraft.id}`, photographer)).status, 200);
+
+      const replacementUpload = await upload(first);
+      assert.equal(replacementUpload.status, 201);
+      const firstReplacement = (await replacementUpload.json()).data;
+      assert.notEqual(firstReplacement.id, firstDraft.id);
+      assert.equal(
+        (await act('progress.update', { status: 'delivered', deliveryPhotoIds: [firstDraft.id] }))
+          .status,
+        409,
+      );
+      const third = await ok(
+        await act('progress.update', {
+          status: 'delivered',
+          deliveryPhotoIds: [firstReplacement.id],
+        }),
+      );
+      assert.equal(third.workflow.progress.deliveryVersion, 3);
+      album = await ok(await call(publicBase(), null, undefined, shareToken));
+      assert.deepEqual(
+        album.replacements.map((photo) => [photo.originalPhotoId, photo.id, photo.deliveryVersion]),
+        [[first.id, firstReplacement.id, 3]],
+      );
+      assert.deepEqual(
+        album.photos.filter((photo) => photo.deliveryVersion === 0).map((photo) => photo.id),
+        originals.map((photo) => photo.id),
+      );
+      assert.equal((await guestImage(firstReplacement.id, 'x'.repeat(43))).status, 404);
+      assert.equal(
+        (await call(`${base}/photos/local-${firstReplacement.id}`, otherOwner)).status,
+        404,
+      );
+      const download = await guestImage(firstReplacement.id);
+      assert.equal(download.status, 200);
+      const metadata = await sharp(Buffer.from(await download.arrayBuffer())).metadata();
+      assert.equal(metadata.width, 45);
+      assert.equal(metadata.height, 60);
+
+      await ok(
+        await act('delivery.revision.start', { deliveryVersion: 3, note: 'Sửa tiếp một ảnh' }),
+      );
+      await ok(await act('progress.update', { status: 'editing' }));
+      await staff('reopen');
+      await guest('photo', { photoId: first.id, selected: false });
+      await guest('photo', { photoId: second.id, selected: true, note: 'Giữ màu tự nhiên' });
+      await guest('finalize');
+      const nextUpload = await upload(second);
+      assert.equal(nextUpload.status, 201);
+      const secondReplacement = (await nextUpload.json()).data;
+      await ok(
+        await act('progress.update', {
+          status: 'delivered',
+          deliveryPhotoIds: [secondReplacement.id],
+        }),
+      );
+      const customerAlbum = await ok(await call(base, owner));
+      assert.deepEqual(
+        new Map(customerAlbum.replacements.map((photo) => [photo.originalPhotoId, photo.id])),
+        new Map([
+          [first.id, firstReplacement.id],
+          [second.id, secondReplacement.id],
+        ]),
+      );
+      const accepted = await ok(await act('delivery.accept', { deliveryVersion: 4 }, owner));
+      assert.equal(accepted.workflow.lifecycle, 'accepted');
+      assert.equal(accepted.workflow.deliveryHistory.length, 4);
+    },
+  );
   await t.test('revoke/rotate, reassignment, cancellation and feature switch', async () => {
     album = await ok(await call(base, photographer));
     await staff('revoke');

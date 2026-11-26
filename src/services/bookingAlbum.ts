@@ -4,7 +4,8 @@ import Booking from '../models/Booking';
 import Workflow from '../models/BookingWorkflow';
 import Album from '../models/BookingAlbum';
 import Photo from '../models/BookingAlbumPhoto';
-import { deliveryAccess } from './bookingDelivery';
+import DeliveryPhoto from '../models/BookingDeliveryPhoto';
+import { deliveryAccess, deliveryPhotoDto } from './bookingDelivery';
 import { DriveImage, driveMetadata, readDriveImage } from './driveAlbumSource';
 import { withResourceTransaction, workflowEnabled, WorkflowProblem } from './workflowTransactions';
 
@@ -63,17 +64,48 @@ export const albumPhotoDto = (p: any) => ({
   note: p.note,
 });
 export const driveDeliveryDto = (p: any) => ({ ...albumPhotoDto(p), id: `drive-${p._id}` });
+export const driveDeliveryVersions = (
+  history: Array<{ version: number; drivePhotos?: unknown[] }>,
+) => history.filter((entry) => entry.drivePhotos?.length).map((entry) => entry.version);
+
 export async function albumDto(album: any, staff = false) {
   const workflow = await Workflow.findOne({ booking: album.booking });
-  const versions = (workflow?.deliveryHistory || [])
-    .filter((v: any) => v.drivePhotos?.length)
-    .map((v: any) => v.version);
-  const photos = await Photo.find({
-    album: album._id,
-    deliveryVersion: { $in: [0, ...versions, ...(staff ? [-1] : [])] },
-  })
-    .sort({ deliveryVersion: 1, order: 1 })
-    .lean();
+  const versions = driveDeliveryVersions(workflow?.deliveryHistory ?? []);
+  const [photos, uploads] = await Promise.all([
+    Photo.find({
+      album: album._id,
+      deliveryVersion: { $in: [0, ...versions, ...(staff ? [-1] : [])] },
+    })
+      .sort({ deliveryVersion: 1, order: 1 })
+      .lean(),
+    DeliveryPhoto.find({
+      booking: album.booking,
+      originalPhotoId: { $exists: true },
+      deletedAt: { $exists: false },
+      ...(!staff ? { 'publishedVersions.0': { $exists: true } } : {}),
+    })
+      .select('originalPhotoId publishedVersions name width height')
+      .lean(),
+  ]);
+  const latestReplacements = new Map<string, (typeof uploads)[number]>();
+  const drafts = [];
+  for (const photo of uploads) {
+    const originalId = String(photo.originalPhotoId);
+    const version = photo.publishedVersions.at(-1);
+    if (version === undefined) {
+      drafts.push({ ...deliveryPhotoDto(photo), deliveryVersion: -1, available: true });
+    } else if (version > (latestReplacements.get(originalId)?.publishedVersions.at(-1) ?? 0)) {
+      latestReplacements.set(originalId, photo);
+    }
+  }
+  const replacements = [
+    ...Array.from(latestReplacements.values(), (photo) => ({
+      ...deliveryPhotoDto(photo),
+      deliveryVersion: photo.publishedVersions.at(-1),
+      available: true,
+    })),
+    ...drafts,
+  ];
   return {
     publicId: album.publicId,
     title: album.title,
@@ -96,6 +128,7 @@ export async function albumDto(album: any, staff = false) {
     canSelect: album.status === 'open' && workflow?.lifecycle === 'editing',
     deliveryVersions: versions,
     photos: photos.map(albumPhotoDto),
+    ...(replacements.length && { replacements }),
     ...(staff
       ? {
           shared: album.shared,

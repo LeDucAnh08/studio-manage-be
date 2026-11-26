@@ -1,10 +1,11 @@
 import { backgroundJobsEnabled } from '../config/queue';
 import { submitAlbumOperation, operationDto } from '../services/backgroundOperations';
 import { executeBookingAlbumCommand } from '../services/bookingAlbumCommand';
-import { Router } from 'express';
-import { isValidObjectId } from 'mongoose';
+import { Router, type Response } from 'express';
+import { isValidObjectId, type Types } from 'mongoose';
 import Album from '../models/BookingAlbum';
 import Photo from '../models/BookingAlbumPhoto';
+import DeliveryPhoto from '../models/BookingDeliveryPhoto';
 import Selection from '../models/BookingAlbumSelection';
 import Booking from '../models/Booking';
 import { asyncHandler } from '../middleware/asyncHandler';
@@ -12,9 +13,10 @@ import { requireClientPortal } from '../middleware/featureFlags';
 import { createRateLimit } from '../middleware/authRateLimit';
 import { sendResponse } from '../utils/response';
 import { WorkflowProblem } from '../services/workflowTransactions';
-import { deliveryAccess } from '../services/bookingDelivery';
+import { deliveryAccess, sendDeliveryPhoto } from '../services/bookingDelivery';
 import {
   albumDto,
+  driveDeliveryVersions,
   mutateAlbum,
   ownerAlbumAccess,
   publicAlbumAccess,
@@ -41,6 +43,40 @@ const handle = (work: Parameters<typeof asyncHandler>[0]) =>
         );
     }
   });
+
+async function sendAlbumPhoto(
+  res: Response,
+  album: { _id: Types.ObjectId; booking: Types.ObjectId },
+  photoId: string,
+  thumbnail: boolean,
+  customerVersions?: number[],
+) {
+  if (photoId.startsWith('local-')) {
+    const id = photoId.slice('local-'.length);
+    const photo =
+      /^[a-f0-9]{24}$/.test(id) &&
+      (await DeliveryPhoto.exists({
+        _id: id,
+        booking: album.booking,
+        originalPhotoId: { $exists: true },
+        deletedAt: { $exists: false },
+        ...(customerVersions && { 'publishedVersions.0': { $exists: true } }),
+      }));
+    if (!photo) throw new WorkflowProblem(404, 'Không tìm thấy ảnh.');
+    await sendDeliveryPhoto(res, id, thumbnail);
+    return;
+  }
+  if (!isValidObjectId(photoId)) throw new WorkflowProblem(404, 'Không tìm thấy ảnh.');
+  const photo = await Photo.findOne({
+    _id: photoId,
+    album: album._id,
+    ...(customerVersions && { deliveryVersion: { $in: [0, ...customerVersions] } }),
+  });
+  if (!photo) throw new WorkflowProblem(404, 'Không tìm thấy ảnh.');
+  const image = await readAlbumPhoto(photo, thumbnail);
+  res.type(image.type).send(image.bytes);
+}
+
 albumRoutes.get(
   '/',
   handle(async (req, res) => {
@@ -142,22 +178,17 @@ albumRoutes.get(
   '/photos/:photoId',
   handle(async (req, res) => {
     const access = await deliveryAccess(req.params.id, req.user!);
-    if (!access.staff) await ownerAlbumAccess(req.params.id, req.user!);
-    if (!isValidObjectId(req.params.photoId)) throw new WorkflowProblem(404, 'Không tìm thấy ảnh.');
-    const album = await Album.findOne({ booking: req.params.id });
-    const versions = access.workflow.deliveryHistory
-      .filter((v: any) => v.drivePhotos?.length)
-      .map((v: any) => v.version);
-    const photo =
-      album &&
-      (await Photo.findOne({
-        _id: req.params.photoId,
-        album: album._id,
-        ...(!access.staff ? { deliveryVersion: { $in: [0, ...versions] } } : {}),
-      }));
-    if (!photo) throw new WorkflowProblem(404, 'Không tìm thấy ảnh.');
-    const image = await readAlbumPhoto(photo, req.query.size === 'thumb');
-    res.type(image.type).send(image.bytes);
+    const album = access.staff
+      ? await Album.findOne({ booking: req.params.id })
+      : (await ownerAlbumAccess(req.params.id, req.user!)).album;
+    if (!album) throw new WorkflowProblem(404, 'Không tìm thấy ảnh.');
+    await sendAlbumPhoto(
+      res,
+      album,
+      req.params.photoId,
+      req.query.size === 'thumb',
+      access.staff ? undefined : driveDeliveryVersions(access.workflow.deliveryHistory),
+    );
   }),
 );
 
@@ -182,18 +213,13 @@ publicAlbumRoutes.get(
   '/photos/:photoId',
   handle(async (req, res) => {
     const { album, workflow } = await publicAlbumAccess(req.params.publicId, tokenOf(req));
-    if (!isValidObjectId(req.params.photoId)) throw new WorkflowProblem(404, 'Không tìm thấy ảnh.');
-    const versions = workflow.deliveryHistory
-      .filter((v: any) => v.drivePhotos?.length)
-      .map((v: any) => v.version);
-    const photo = await Photo.findOne({
-      _id: req.params.photoId,
-      album: album._id,
-      deliveryVersion: { $in: [0, ...versions] },
-    });
-    if (!photo) throw new WorkflowProblem(404, 'Không tìm thấy ảnh.');
-    const image = await readAlbumPhoto(photo, req.query.size === 'thumb');
-    res.type(image.type).send(image.bytes);
+    await sendAlbumPhoto(
+      res,
+      album,
+      req.params.photoId,
+      req.query.size === 'thumb',
+      driveDeliveryVersions(workflow.deliveryHistory),
+    );
   }),
 );
 publicAlbumRoutes.post(

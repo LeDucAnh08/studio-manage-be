@@ -3,6 +3,7 @@ import mongoose, { Schema } from 'mongoose';
 const schema = new Schema(
   {
     booking: { type: Schema.Types.ObjectId, ref: 'Booking', required: true, index: true },
+    originalPhotoId: { type: Schema.Types.ObjectId, ref: 'BookingAlbumPhoto' },
     uploadedBy: { type: Schema.Types.ObjectId, ref: 'User', required: true },
     uploadKey: { type: String, required: true, select: false },
     sha256: { type: String, required: true, select: false },

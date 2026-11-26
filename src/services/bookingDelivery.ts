@@ -1,7 +1,10 @@
 import path from 'node:path';
 import { mkdir, stat, unlink, readdir, realpath } from 'node:fs/promises';
 import { ClientSession, isValidObjectId } from 'mongoose';
+import type { Response } from 'express';
 import Booking from '../models/Booking';
+import BookingAlbum from '../models/BookingAlbum';
+import BookingAlbumPhoto from '../models/BookingAlbumPhoto';
 import BookingWorkflow from '../models/BookingWorkflow';
 import Photo from '../models/BookingDeliveryPhoto';
 import { withResourceTransaction, WorkflowProblem } from './workflowTransactions';
@@ -55,7 +58,22 @@ export const deliveryPhotoDto = (photo: any) => ({
   name: photo.name,
   width: photo.width,
   height: photo.height,
+  ...(photo.originalPhotoId && { originalPhotoId: String(photo.originalPhotoId) }),
 });
+
+export async function sendDeliveryPhoto(res: Response, id: string, thumbnail: boolean) {
+  const file = deliveryFile(id, thumbnail);
+  try {
+    await stat(file);
+  } catch {
+    throw new WorkflowProblem(404, 'Ảnh hiện chưa sẵn sàng.');
+  }
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  await new Promise<void>((resolve, reject) =>
+    res.sendFile(file, (error) => (error ? reject(error) : resolve())),
+  );
+}
 
 export async function deliveryAccess(
   bookingId: string,
@@ -90,6 +108,27 @@ export async function deliveryAccess(
   return { booking, workflow, staff: admin || assigned };
 }
 
+export async function validateReplacementOriginals(
+  bookingId: unknown,
+  originalIds: string[],
+  session: ClientSession,
+) {
+  const album = await BookingAlbum.findOne({ booking: bookingId, status: { $ne: 'draft' } })
+    .select('_id')
+    .session(session);
+  const count = album
+    ? await BookingAlbumPhoto.countDocuments({
+        _id: { $in: originalIds },
+        album: album._id,
+        deliveryVersion: 0,
+        available: true,
+        selected: true,
+      }).session(session)
+    : 0;
+  if (count !== originalIds.length)
+    throw new WorkflowProblem(409, 'Ảnh gốc hoặc yêu cầu chỉnh sửa đã thay đổi. Tải lại album.');
+}
+
 export async function validateDeliveryPhotos(
   input: unknown,
   bookingId: unknown,
@@ -110,6 +149,12 @@ export async function validateDeliveryPhotos(
   }).session(session);
   if (photos.length !== input.length)
     throw new WorkflowProblem(409, 'Có ảnh đã bị xóa hoặc không thuộc đơn này.');
+  const originalIds = photos.flatMap((photo) =>
+    photo.originalPhotoId ? [String(photo.originalPhotoId)] : [],
+  );
+  if (new Set(originalIds).size !== originalIds.length)
+    throw new WorkflowProblem(400, 'Mỗi ảnh gốc chỉ nhận một bản chỉnh trong lần bàn giao.');
+  if (originalIds.length) await validateReplacementOriginals(bookingId, originalIds, session);
   try {
     await Promise.all(
       photos.flatMap((photo) => [
