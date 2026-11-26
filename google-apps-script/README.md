@@ -3,15 +3,11 @@
 Web App nhận webhook từ backend: mỗi khi tạo lịch chụp, BE gọi tới đây để tạo
 folder Drive cho bộ ảnh và ghi 1 dòng vào Google Sheet quản lý nội bộ.
 
-Cấu trúc theo **mùa (season)**:
-- Drive: `<folder gốc>/<Tên mùa>/<Ngày - Lớp Trường - Địa điểm>` — folder mùa và
-  folder bộ ảnh đều được **tìm-hoặc-tạo**: nếu đã tồn tại thì dùng lại link cũ,
-  không tạo trùng.
-- Sheet: mỗi mùa là 1 tab riêng (tên tab = tên mùa), tự tạo nếu chưa có. Mỗi lịch
-  ghi 1 dòng định danh theo `scheduleId`: **đã có thì cập nhật dòng đó**, chưa có
-  thì thêm dòng mới (không nhân bản).
-- Xoá lịch (`action: 'delete'`): chuyển folder bộ ảnh vào **thùng rác** Drive (theo
-  `folderId`) và **xoá dòng** tương ứng trong Sheet (theo `scheduleId`).
+Cấu trúc dữ liệu:
+
+- Drive: `<folder gốc>/<Ngày - Lớp Trường - Địa điểm>`, dùng lại folder đã có.
+- Sheet: lịch mới dùng tab **Lịch chụp**. Dòng đã có ở tab cũ được tìm bằng `scheduleId` để cập nhật, không tạo trùng.
+- Xóa lịch: chuyển đúng folder theo `folderId` vào thùng rác và tìm dòng theo `scheduleId` trên các tab để xóa. Các folder/tab cũ không bị di chuyển hoặc xóa hàng loạt.
 
 ## Thiết lập
 
@@ -21,7 +17,7 @@ Cấu trúc theo **mùa (season)**:
    | Key | Giá trị |
    |-----|---------|
    | `SECRET` | chuỗi bí mật bất kỳ (trùng `GAS_WEBHOOK_SECRET` trong backend `.env`) |
-   | `ROOT_FOLDER_ID` | ID folder gốc trên Drive (chứa các folder theo mùa) |
+   | `ROOT_FOLDER_ID` | ID folder gốc trên Drive (chứa các bộ ảnh) |
    | `SHEET_ID` | ID Google Sheet quản lý (lấy từ URL sheet) |
 4. **Deploy → New deployment → Web app**
    - Execute as: **Me**
@@ -45,7 +41,7 @@ Cấu trúc theo **mùa (season)**:
 
 `Ngày tạo | Trường | Lớp | Ngày chụp | Giờ | Địa điểm | Thợ chính | Thợ phụ | Link folder | Trạng thái | Link hợp đồng | scheduleId`
 
-Mỗi mùa là 1 tab riêng; header tự tạo ở dòng đầu của tab khi tab còn trống.
+Tab Lịch chụp tự tạo header ở dòng đầu khi còn trống.
 
 ## Kiểm thử nhanh
 

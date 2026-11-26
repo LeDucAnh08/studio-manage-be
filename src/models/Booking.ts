@@ -1,6 +1,6 @@
 import { Schema, model } from 'mongoose';
 
-// Deliberately separate from Customer (school/class) and operational Schedule.
+// Deliberately separate from Class (school/class) and operational Schedule.
 const eventSchema = new Schema({
   message: { type: String, required: true },
   audience: { type: String, enum: ['client', 'admin'], required: true },

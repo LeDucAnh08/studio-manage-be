@@ -30,7 +30,7 @@ const feedbackItemSchema = new Schema<IFeedbackItem>(
 
 const feedbackSchema = new Schema<IFeedback>(
   {
-    customer: { type: Schema.Types.ObjectId, ref: 'Customer' },
+    customer: { type: Schema.Types.ObjectId, ref: 'Class' },
     phone: { type: String, trim: true },
     crewFeedback: { type: feedbackItemSchema },
     albumFeedback: { type: feedbackItemSchema },

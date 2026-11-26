@@ -11,6 +11,8 @@ const express = require('express');
 const jwt = require('jsonwebtoken');
 const sharp = require('sharp');
 const Package = require('../src/models/Package').default;
+const PackageDetail = require('../src/models/PackageDetail').default;
+const transactions = require('../src/services/workflowTransactions');
 const User = require('../src/models/User').default;
 const { readPackageContent } = require('../src/utils/packageContentInput');
 
@@ -34,7 +36,10 @@ test('content validation preserves ordering and rejects malformed references and
   assert.equal(parsed.details.deliverables, '20 ảnh chỉnh sửa/người\nNhận qua Google Drive');
   for (const key of ['deliverables', 'shootScope', 'pricingConditions']) {
     assert.equal(readPackageContent({ version: 0, details: {} }, 0).details[key], '');
-    assert.equal(new Package({ details: parsed.details }).details[key], parsed.details[key]);
+    assert.equal(
+      new PackageDetail({ package: '000000000000000000000011', ...parsed.details })[key],
+      parsed.details[key],
+    );
     for (const value of [null, 30, [], {}, 'x'.repeat(4001)]) {
       assert.throws(() => readPackageContent({ version: 0, details: { [key]: value } }, 0));
     }
@@ -78,6 +83,7 @@ test('public details, editor authorization and image updates remain consistent o
   });
   const id = '000000000000000000000011';
   let pkg = { _id: id, name: 'Gói thử', pricePerMember: 500000, costumes: [], detailsVersion: 0 };
+  let detail;
   let failWrite = false;
   let failAfterWrite = false;
   let loseRace = false;
@@ -86,6 +92,9 @@ test('public details, editor authorization and image updates remain consistent o
       return this;
     },
     populate() {
+      return this;
+    },
+    session() {
       return this;
     },
     async lean() {
@@ -99,11 +108,30 @@ test('public details, editor authorization and image updates remain consistent o
     query(() => {
       if (failWrite) throw new Error('Database unavailable');
       if (loseRace) return null;
-      pkg = { ...pkg, details: update.$set.details, detailsVersion: pkg.detailsVersion + 1 };
-      if (failAfterWrite) throw new Error('Connection lost after commit');
+      pkg = { ...pkg, detailsVersion: pkg.detailsVersion + 1 };
       return structuredClone(pkg);
     }),
   );
+  t.mock.method(PackageDetail, 'findOne', () =>
+    query(() => (detail ? structuredClone(detail) : null)),
+  );
+  t.mock.method(PackageDetail, 'findOneAndUpdate', async (_filter, update) => {
+    detail = { package: id, ...update.$set };
+    return structuredClone(detail);
+  });
+  t.mock.method(transactions, 'withResourceTransaction', async (work) => {
+    const before = { pkg: structuredClone(pkg), detail: structuredClone(detail) };
+    let result;
+    try {
+      result = await work({});
+    } catch (error) {
+      pkg = before.pkg;
+      detail = before.detail;
+      throw error;
+    }
+    if (failAfterWrite) throw new Error('Connection lost after commit');
+    return result;
+  });
   t.mock.method(User, 'findById', (value) => ({
     select: async () => ({ _id: value, roles: [Number(value.slice(-1))], isActive: true }),
   }));
@@ -159,7 +187,7 @@ test('public details, editor authorization and image updates remain consistent o
     for (const role of [2, 4, 5]) assert.equal((await put({}, [], 0, role)).status, 401);
     for (const role of [3, 6]) assert.equal((await put({}, [], 0, role)).status, 403);
     assert.equal((await put({ audience: 'Lớp cuối cấp' }, [], 0, 1)).status, 200);
-    assert.equal(pkg.details.audience, 'Lớp cuối cấp');
+    assert.equal(detail.audience, 'Lớp cuối cấp');
   });
   await t.test(
     'saves and publicly returns the three optional package information fields',
@@ -266,12 +294,12 @@ test('public details, editor authorization and image updates remain consistent o
     },
   );
   await t.test('reordering and clearing images takes effect after successful save', async () => {
-    const image = pkg.details.gallery[0];
+    const image = detail.gallery[0];
     assert.equal((await put({ gallery: [{ id: image.id, alt: 'Mô tả mới' }] })).status, 200);
-    assert.equal(pkg.details.gallery[0].alt, 'Mô tả mới');
+    assert.equal(detail.gallery[0].alt, 'Mô tả mới');
     assert.equal((await readdir(mediaRoot)).length, 1);
     assert.equal((await put({})).status, 200);
-    assert.deepEqual(pkg.details.gallery, []);
+    assert.deepEqual(detail.gallery, []);
     assert.equal((await readdir(mediaRoot)).length, 0);
   });
   await t.test(
@@ -281,7 +309,7 @@ test('public details, editor authorization and image updates remain consistent o
       const response = await put({ gallery: [{ uploadIndex: 0, alt: 'Đã commit' }] }, [png]);
       failAfterWrite = false;
       assert.equal(response.status, 500);
-      const image = pkg.details.gallery[0];
+      const image = detail.gallery[0];
       assert.ok(image);
       assert.ok((await readFile(path.join(mediaRoot, image.id))).length > 0);
       assert.equal((await put({})).status, 200);

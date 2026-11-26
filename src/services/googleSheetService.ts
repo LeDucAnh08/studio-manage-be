@@ -1,6 +1,5 @@
 export interface FolderLogPayload {
   scheduleId: string;
-  season: string; // tên mùa — dùng làm folder con & tên tab Sheet
   school: string;
   className: string;
   shootDate: string; // chuỗi đã format dd/mm/yyyy
@@ -86,7 +85,6 @@ export async function createFolderAndLog(
 
 export interface DeletePayload {
   scheduleId: string;
-  season: string;
   folderId?: string;
 }
 

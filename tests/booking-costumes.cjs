@@ -20,7 +20,7 @@ const models = Object.fromEntries(
     'Costume',
     'RentalOrder',
     'Schedule',
-    'Customer',
+    'Class',
     'Student',
     'Category',
     'Transaction',
@@ -234,7 +234,7 @@ test('booking costume holds share stock and transfer atomically on a real replic
       'BookingWorkflow',
       'RentalOrder',
       'Schedule',
-      'Customer',
+      'Class',
       'Student',
       'Transaction',
     ])
@@ -464,7 +464,7 @@ test('booking costume holds share stock and transfer atomically on a real replic
             (await call(`/costumes/${costume._id}`, users.admin, body, method)).status,
             409,
           );
-        const customer = await models.Customer.create({
+        const customer = await models.Class.create({
           className: 'Lớp',
           contactName: 'Liên hệ',
           contactPhone: '0901234567',

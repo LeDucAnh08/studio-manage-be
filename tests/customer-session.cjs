@@ -9,18 +9,18 @@ const assert = require('node:assert/strict');
 const express = require('express');
 const jwt = require('jsonwebtoken');
 const User = require('../src/models/User').default;
-const Customer = require('../src/models/Customer').default;
+const Class = require('../src/models/Class').default;
 
 test('customer data and shared links require an active session; only portfolio counts remain anonymous', async (t) => {
   let reads = 0;
   User.findById = (id) => ({
     select: async () => ({ _id: id, isActive: id !== 'inactive', roles: [6] }),
   });
-  Customer.countDocuments = async () => {
+  Class.countDocuments = async () => {
     reads++;
     return 7;
   };
-  Customer.distinct = async () => {
+  Class.distinct = async () => {
     reads++;
     return ['Trường A', 'Trường A', ' Trường B ', ''];
   };

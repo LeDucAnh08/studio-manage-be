@@ -1,9 +1,8 @@
 import { Request, Response } from 'express';
 import mongoose from 'mongoose';
 import Transaction from '../models/Transaction';
-import Customer from '../models/Customer';
+import Class from '../models/Class';
 import Schedule from '../models/Schedule';
-import Season from '../models/Season';
 import type { UpcomingScheduleDto } from '../types/dto';
 import { sendResponse } from '../utils/response';
 import { dashboardUsers } from '../services/dashboardUsers';
@@ -12,37 +11,23 @@ const isPrivileged = (roles: number[]): boolean => roles.some((r) => r === 0 || 
 const isPhotographer = (roles: number[]): boolean => roles.includes(3);
 
 export const getStats = async (req: Request, res: Response): Promise<void> => {
-  const {
-    userId,
-    months: monthsStr,
-    season,
-  } = req.query as { userId?: string; months?: string; season?: string };
+  const { userId, months: monthsStr } = req.query as { userId?: string; months?: string };
   const privileged = isPrivileged(req.user!.roles);
   const userRoles = req.user!.roles as number[];
 
   const now = new Date();
 
-  // Determine window based on season (uses season's actual date range) or rolling months fallback.
-  let windowStart: Date;
-  let windowEnd: Date;
-
-  if (season) {
-    const seasonDoc = await Season.findById(season).select('startDate endDate').lean();
-    if (seasonDoc) {
-      windowStart = new Date(seasonDoc.startDate);
-      windowStart.setHours(0, 0, 0, 0);
-      windowEnd = new Date(seasonDoc.endDate);
-      windowEnd.setHours(23, 59, 59, 999);
-    } else {
-      const months = Math.max(1, Math.min(24, parseInt(monthsStr ?? '12', 10) || 12));
-      windowStart = new Date(now.getFullYear(), now.getMonth() - months, now.getDate(), 0, 0, 0, 0);
-      windowEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
-    }
-  } else {
-    const months = Math.max(1, Math.min(24, parseInt(monthsStr ?? '12', 10) || 12));
-    windowStart = new Date(now.getFullYear(), now.getMonth() - months, now.getDate(), 0, 0, 0, 0);
-    windowEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
-  }
+  const months = Math.max(1, Math.min(24, parseInt(monthsStr ?? '12', 10) || 12));
+  const windowStart = new Date(
+    now.getFullYear(),
+    now.getMonth() - months,
+    now.getDate(),
+    0,
+    0,
+    0,
+    0,
+  );
+  const windowEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
 
   // Determine userId to filter — non-admin always uses own ID
   let filterUserId: mongoose.Types.ObjectId | null = null;
@@ -55,15 +40,11 @@ export const getStats = async (req: Request, res: Response): Promise<void> => {
   const txFilter: Record<string, unknown> = filterUserId ? { createdBy: filterUserId } : {};
   const dateRange = { $gte: windowStart, $lte: windowEnd };
 
-  // Customer filter
+  // Class filter
   const customerFilter: Record<string, unknown> = {
     ...(filterUserId ? { createdBy: filterUserId } : {}),
   };
-  if (season) {
-    customerFilter.season = season;
-  } else {
-    customerFilter.createdAt = dateRange;
-  }
+  customerFilter.createdAt = dateRange;
 
   // Merge totals + daily into one $facet aggregation, and run it in parallel with customerCount.
   type TxFacetResult = [
@@ -106,7 +87,7 @@ export const getStats = async (req: Request, res: Response): Promise<void> => {
         },
       },
     ]),
-    Customer.countDocuments(customerFilter),
+    Class.countDocuments(customerFilter),
     privileged ? dashboardUsers(now) : undefined,
   ]);
 

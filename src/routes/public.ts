@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import type { Types } from 'mongoose';
-import Customer from '../models/Customer';
+import Class from '../models/Class';
 import Student from '../models/Student';
 import Schedule from '../models/Schedule';
 import Package from '../models/Package';
@@ -25,8 +25,8 @@ router.get(
   '/portfolio-stats',
   asyncHandler(async (_req, res) => {
     const [classes, schools] = await Promise.all([
-      Customer.countDocuments(),
-      Customer.distinct('school'),
+      Class.countDocuments(),
+      Class.distinct('school'),
     ]);
     sendResponse(res, 200, true, 'OK', {
       classes,
@@ -52,18 +52,18 @@ router.use('/albums/:publicId', publicAlbumRoutes);
 
 const hasCustomerAccess = async (customerId: string, access: unknown): Promise<boolean> => {
   if (!isValidObjectId(customerId) || typeof access !== 'string' || !access) return false;
-  const customer = await Customer.findOne({ _id: customerId }).select('+publicAccessToken');
+  const customer = await Class.findOne({ _id: customerId }).select('+publicAccessToken');
   return !!customer?.publicAccessToken && customer.publicAccessToken === access;
 };
 
-// Customer-facing feedback; an active account session is required above.
+// Class-facing feedback; an active account session is required above.
 router.post('/feedback', asyncHandler(feedbackController.submit));
 router.get('/member-intake/:token', (req, res, next) =>
   getPublicMemberIntake(req, res).catch(next),
 );
 router.post('/member-intake/:token', (req, res, next) => submitPublicMember(req, res).catch(next));
 
-// Customer package browsing after sign-in.
+// Class package browsing after sign-in.
 router.get('/packages/:id', validatePackageId, asyncHandler(getPublicPackage));
 router.get('/packages', async (_req: Request, res: Response): Promise<void> => {
   const packages = await Package.find({})
@@ -129,7 +129,7 @@ router.get('/customers/:id', async (req: Request, res: Response): Promise<void> 
     sendResponse(res, 404, false, 'Không tìm thấy form hoặc link không hợp lệ');
     return;
   }
-  const customer = await Customer.findById(req.params.id).select('className school');
+  const customer = await Class.findById(req.params.id).select('className school');
   if (!customer) {
     sendResponse(res, 404, false, 'Not found');
     return;

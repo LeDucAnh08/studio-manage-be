@@ -5,6 +5,7 @@ import Booking from '../models/Booking';
 import ConceptOrder from '../models/ConceptOrder';
 import { conceptEnabled } from '../services/conceptPolicy';
 import Package from '../models/Package';
+import { attachPackageDetails } from '../services/packageDetails';
 import User from '../models/User';
 import BookingWorkflow from '../models/BookingWorkflow';
 import { workflowPhotographers } from '../services/workflowPhotographer';
@@ -311,11 +312,15 @@ router.post(
       }
     }
 
-    const selected = await Package.findById(packageId);
-    if (!selected) {
+    const selectedPackage = await Package.findById(packageId);
+    if (!selectedPackage) {
       sendResponse(res, 404, false, 'Gói dịch vụ không còn tồn tại');
       return;
     }
+    const selected =
+      req.body.packageAgreement === undefined
+        ? selectedPackage
+        : await attachPackageDetails(selectedPackage);
 
     const payload = {
       packageAgreement: readPackageAgreement(

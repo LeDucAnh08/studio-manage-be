@@ -13,7 +13,6 @@ export interface ISchedule extends Document {
   bookedBy?: Types.ObjectId;
   status: 'pending' | 'confirmed' | 'completed' | 'cancelled';
   notes?: string;
-  season?: Types.ObjectId | null;
   contractUrl?: string;
   driveFolderUrl?: string;
   driveFolderId?: string;
@@ -33,7 +32,7 @@ const scheduleSchema = new Schema<ISchedule>(
   {
     customer: {
       type: Schema.Types.ObjectId,
-      ref: 'Customer',
+      ref: 'Class',
       required: function () {
         return !(this as any).conceptOrder;
       },
@@ -55,7 +54,6 @@ const scheduleSchema = new Schema<ISchedule>(
       default: 'pending',
     },
     notes: { type: String },
-    season: { type: Schema.Types.ObjectId, ref: 'Season', default: null },
     contractUrl: { type: String },
     driveFolderUrl: { type: String },
     driveFolderId: { type: String },
@@ -81,8 +79,6 @@ scheduleSchema.index(
 scheduleSchema.index({ shootDate: 1 });
 scheduleSchema.index({ customer: 1 });
 scheduleSchema.index({ status: 1 });
-scheduleSchema.index({ season: 1 });
-scheduleSchema.index({ season: 1, shootDate: -1 });
 scheduleSchema.index({ leadPhotographer: 1, shootDate: 1 });
 scheduleSchema.index({ supportPhotographers: 1, shootDate: 1 });
 scheduleSchema.index({ workflowBooking: 1 }, { unique: true, sparse: true });

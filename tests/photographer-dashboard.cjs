@@ -98,7 +98,6 @@ test('photographer dashboard requires role 3 and scopes both service branches be
   const User = require('../src/models/User').default;
   const Workflow = require('../src/models/BookingWorkflow').default;
   const Concept = require('../src/models/ConceptOrder').default;
-  const Season = require('../src/models/Season').default;
   const photo = new Types.ObjectId(),
     mixed = new Types.ObjectId(),
     admin = new Types.ObjectId(),
@@ -120,7 +119,6 @@ test('photographer dashboard requires role 3 and scopes both service branches be
     pipeline = value;
     return [];
   });
-  t.mock.method(Season, 'findById', () => ({ select: () => ({ lean: async () => null }) }));
   const app = express();
   app.use('/dashboard', require('../src/routes/dashboard').default);
   app.use((error, req, res, next) =>
@@ -161,9 +159,9 @@ test('photographer dashboard requires role 3 and scopes both service branches be
     '?metric=bad',
     '?page=0',
     '?page=2&page=3',
-    '?season=bad',
     '?group=9',
   ])
     assert.equal((await call(photo, query)).status, 400);
-  assert.equal((await call(photo, '?season=' + new Types.ObjectId())).status, 404);
+  assert.equal((await call(photo, '?season=' + new Types.ObjectId())).status, 200);
+  assert.ok(!JSON.stringify(pipeline).includes('season')); // Obsolete URLs cannot restrict assignments.
 });

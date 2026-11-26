@@ -15,7 +15,7 @@ export interface IStudent extends Document {
 
 const studentSchema = new Schema<IStudent>(
   {
-    customer: { type: Schema.Types.ObjectId, ref: 'Customer', required: true },
+    customer: { type: Schema.Types.ObjectId, ref: 'Class', required: true },
     name: { type: String, required: true, trim: true },
     gender: { type: String, enum: ['male', 'female', 'other'] },
     height: { type: Number, min: 1 },

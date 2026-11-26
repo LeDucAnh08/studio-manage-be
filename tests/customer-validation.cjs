@@ -4,7 +4,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const express = require('express');
 const { publicStudentError, publicFeedbackError } = require('../src/utils/publicFormValidation');
-const Customer = require('../src/models/Customer').default;
+const Class = require('../src/models/Class').default;
 const Student = require('../src/models/Student').default;
 const Feedback = require('../src/models/Feedback').default;
 const Schedule = require('../src/models/Schedule').default;
@@ -64,7 +64,7 @@ test('public HTTP forms return useful 400 messages and never write rejected inpu
   let writes = 0;
   User.findById = () => ({ select: async () => ({ _id: customerId, roles: [6], isActive: true }) });
   const authorization = `Bearer ${jwt.sign({ id: customerId }, process.env.JWT_SECRET, { expiresIn: '1h' })}`;
-  Customer.findOne = () => ({ select: async () => ({ publicAccessToken: 'isolated-access' }) });
+  Class.findOne = () => ({ select: async () => ({ publicAccessToken: 'isolated-access' }) });
   Schedule.findOne = () => ({ select: () => ({ lean: async () => ({ costumes: [] }) }) });
   Student.create = async (body) => {
     writes++;

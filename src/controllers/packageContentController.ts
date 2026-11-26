@@ -2,13 +2,16 @@ import { Request, Response, RequestHandler } from 'express';
 import mongoose from 'mongoose';
 import multer from 'multer';
 import Package from '../models/Package';
+import PackageDetail from '../models/PackageDetail';
+import { attachPackageDetails, savePackageDetails } from '../services/packageDetails';
+import { WorkflowProblem } from '../services/workflowTransactions';
 import { sendResponse } from '../utils/response';
 import { readPackageContent } from '../utils/packageContentInput';
 import { deletePackageImages, storePackageImage } from '../services/packageMedia';
 import type { PackageImage } from '../types/packageContent';
 
 const PUBLIC_FIELDS =
-  'name pricePerMember depositPercent depositHoldHours updatedAt duration crewRatio editingScope deliveryDays studentsPerCrew description costumes isPopular details detailsVersion';
+  'name pricePerMember depositPercent depositHoldHours updatedAt duration crewRatio editingScope deliveryDays studentsPerCrew description costumes isPopular detailsVersion';
 
 export const validatePackageId: RequestHandler = (req, res, next) => {
   if (!mongoose.isObjectIdOrHexString(req.params.id)) {
@@ -51,7 +54,12 @@ export async function getPublicPackage(req: Request, res: Response): Promise<voi
     sendResponse(res, 404, false, 'Gói dịch vụ không còn tồn tại.');
     return;
   }
-  sendResponse(res, 200, true, 'OK', pkg);
+  try {
+    sendResponse(res, 200, true, 'OK', await attachPackageDetails(pkg));
+  } catch (error) {
+    if (!(error instanceof WorkflowProblem)) throw error;
+    sendResponse(res, error.status, false, error.message);
+  }
 }
 
 export async function updatePackageContent(req: Request, res: Response): Promise<void> {
@@ -68,9 +76,17 @@ export async function updatePackageContent(req: Request, res: Response): Promise
     );
     return;
   }
-  const previous = await Package.findById(req.params.id).lean();
-  if (!previous) {
+  const previousPackage = await Package.findById(req.params.id).lean();
+  if (!previousPackage) {
     sendResponse(res, 404, false, 'Gói dịch vụ không còn tồn tại.');
+    return;
+  }
+  let previous;
+  try {
+    previous = await attachPackageDetails(previousPackage);
+  } catch (error) {
+    if (!(error instanceof WorkflowProblem)) throw error;
+    sendResponse(res, error.status, false, error.message);
     return;
   }
   if ((previous.detailsVersion || 0) !== parsed.version) {
@@ -101,23 +117,11 @@ export async function updatePackageContent(req: Request, res: Response): Promise
       alt: image.alt,
       caption: image.caption,
     }));
-    const versionFilter =
-      parsed.version === 0
-        ? { $or: [{ detailsVersion: 0 }, { detailsVersion: { $exists: false } }] }
-        : { detailsVersion: parsed.version };
     writeAttempted = true;
-    const saved = await Package.findOneAndUpdate(
-      { _id: req.params.id, ...versionFilter },
-      {
-        $set: { details: { ...parsed.details, gallery } },
-        $inc: { detailsVersion: 1 },
-      },
-      { new: true, runValidators: true },
-    ).lean();
-    if (!saved) {
-      sendResponse(res, 409, false, 'Gói đã thay đổi hoặc bị xóa. Hãy tải lại trước khi lưu.');
-      return;
-    }
+    const saved = await savePackageDetails(req.params.id, parsed.version, {
+      ...parsed.details,
+      gallery,
+    });
     committed = true;
     // The editor does not need costumes; avoid a second DB query after committing media references.
     delete saved.costumes;
@@ -128,6 +132,10 @@ export async function updatePackageContent(req: Request, res: Response): Promise
     );
     sendResponse(res, 200, true, 'Đã lưu nội dung chi tiết.', saved);
   } catch (error) {
+    if (error instanceof WorkflowProblem) {
+      sendResponse(res, error.status, false, error.message);
+      return;
+    }
     if ((error as NodeJS.ErrnoException).code) throw error;
     if ((error as Error).message.startsWith('Ảnh không hợp lệ')) {
       sendResponse(res, 400, false, (error as Error).message);
@@ -141,9 +149,11 @@ export async function updatePackageContent(req: Request, res: Response): Promise
         try {
           // A connection error may happen after MongoDB committed the update.
           // Never remove an image that the persisted package already references.
-          const latest = await Package.findById(req.params.id).select('details.gallery').lean();
+          const latest = await PackageDetail.findOne({ package: req.params.id })
+            .select('gallery')
+            .lean();
           removable = stored.filter(
-            (image) => !latest?.details?.gallery.some((saved) => saved.id === image.id),
+            (image) => !latest?.gallery.some((saved) => saved.id === image.id),
           );
         } catch {
           // ponytail: retain uncertain files during a DB outage; reconcile unreferenced media if storage grows.

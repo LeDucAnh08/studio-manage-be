@@ -2,6 +2,9 @@ import { Request, Response } from 'express';
 import Package from '../models/Package';
 import { sendResponse } from '../utils/response';
 import { deletePackageImages } from '../services/packageMedia';
+import PackageDetail from '../models/PackageDetail';
+import { attachPackageDetails } from '../services/packageDetails';
+import { withResourceTransaction, WorkflowProblem } from '../services/workflowTransactions';
 
 const validDepositSettings = (data: Record<string, unknown>) =>
   (data.depositPercent === undefined ||
@@ -28,7 +31,12 @@ export const getOne = async (req: Request, res: Response): Promise<void> => {
     sendResponse(res, 404, false, 'Not found');
     return;
   }
-  sendResponse(res, 200, true, 'OK', pkg);
+  try {
+    sendResponse(res, 200, true, 'OK', await attachPackageDetails(pkg));
+  } catch (error) {
+    if (!(error instanceof WorkflowProblem)) throw error;
+    sendResponse(res, error.status, false, error.message);
+  }
 };
 
 export const create = async (req: Request, res: Response): Promise<void> => {
@@ -82,7 +90,10 @@ export const update = async (req: Request, res: Response): Promise<void> => {
 };
 
 export const remove = async (req: Request, res: Response): Promise<void> => {
-  const pkg = await Package.findByIdAndDelete(req.params.id);
-  if (pkg?.details) await deletePackageImages(pkg.details.gallery.map((image) => image.id));
+  const detail = await withResourceTransaction(async (session) => {
+    await Package.findByIdAndDelete(req.params.id, { session });
+    return PackageDetail.findOneAndDelete({ package: req.params.id }, { session });
+  });
+  if (detail) await deletePackageImages(detail.gallery.map((image) => image.id));
   sendResponse(res, 200, true, 'Đã xóa gói chụp');
 };

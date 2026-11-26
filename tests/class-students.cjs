@@ -6,7 +6,7 @@ const assert = require('node:assert/strict');
 const express = require('express');
 const jwt = require('jsonwebtoken');
 const User = require('../src/models/User').default;
-const Customer = require('../src/models/Customer').default;
+const Class = require('../src/models/Class').default;
 const BookingWorkflow = require('../src/models/BookingWorkflow').default;
 const Student = require('../src/models/Student').default;
 
@@ -34,7 +34,7 @@ test('class roster keeps existing role permissions and reads only that class boo
   t.mock.method(User, 'findById', (role) => ({
     select: async () => ({ _id: id, roles: [Number(role)], isActive: true }),
   }));
-  t.mock.method(Customer, 'exists', async (query) => {
+  t.mock.method(Class, 'exists', async (query) => {
     reads++;
     assert.deepEqual(query, { _id: id });
     return exists;

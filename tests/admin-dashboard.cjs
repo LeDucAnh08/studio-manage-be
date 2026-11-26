@@ -46,7 +46,7 @@ test('dashboard HTTP exposes only aggregate user growth to admins and preserves 
   const express = require('express');
   const jwt = require('jsonwebtoken');
   const Transaction = require('../src/models/Transaction').default;
-  const Customer = require('../src/models/Customer').default;
+  const Class = require('../src/models/Class').default;
   const Schedule = require('../src/models/Schedule').default;
   let userReads = 0;
   t.mock.method(User, 'findById', (role) => ({
@@ -67,7 +67,7 @@ test('dashboard HTTP exposes only aggregate user growth to admins and preserves 
   t.mock.method(Transaction, 'aggregate', async () => [
     { totals: [{ _id: 'income', total: 500 }], daily: [] },
   ]);
-  t.mock.method(Customer, 'countDocuments', async () => 0);
+  t.mock.method(Class, 'countDocuments', async () => 0);
   t.mock.method(Schedule, 'countDocuments', async () => 0);
   t.mock.method(Schedule, 'find', () => {
     const chain = {

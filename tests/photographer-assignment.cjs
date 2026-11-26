@@ -15,7 +15,7 @@ const Booking = require('../src/models/Booking').default;
 const Workflow = require('../src/models/BookingWorkflow').default;
 const Schedule = require('../src/models/Schedule').default;
 const Block = require('../src/models/PhotographerUnavailability').default;
-const Customer = require('../src/models/Customer').default;
+const Class = require('../src/models/Class').default;
 const {
   photographerAvailability,
   parsePhotographerInterval,
@@ -440,7 +440,7 @@ test('photographer assignment, availability and personal busy time', async (t) =
   await t.test(
     'busy time and legacy schedule creation serialize on the same resource lock',
     async () => {
-      const customer = await Customer.create({
+      const customer = await Class.create({
         className: 'Test',
         total: 1,
         createdBy: admin._id,

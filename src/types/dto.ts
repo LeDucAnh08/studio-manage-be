@@ -77,7 +77,6 @@ export interface ScheduleDto {
   bookedBy: string | null;
   status: 'pending' | 'confirmed' | 'completed' | 'cancelled';
   notes?: string;
-  season?: string | null;
   contractUrl?: string;
   createdAt?: string;
 }
@@ -219,14 +218,3 @@ export interface DashboardStats {
   showSchedules: boolean;
   upcomingSchedules: UpcomingScheduleDto[];
 }
-
-// Season DTOs
-export interface SeasonDto {
-  _id: string;
-  name: string;
-  startDate: string;
-  endDate: string;
-  createdAt?: string;
-}
-
-export interface SeasonResponse extends SeasonDto {}

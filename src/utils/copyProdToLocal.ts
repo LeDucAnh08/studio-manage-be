@@ -21,14 +21,14 @@ import mongoose, { Connection } from 'mongoose';
 
 // ─── Danh sách collection cần sao chép (theo thứ tự phụ thuộc) ───────────────
 const COLLECTIONS = [
-  'seasons',
   'users',
   'costumes',
   'costumtypes', // mongoose pluralises CostumeType → costumtypes
   'costumetypes', // phòng trường hợp tên khác
   'categories',
   'packages',
-  'customers',
+  'package_details',
+  'classes',
   'schedules',
   'students',
   'transactions',

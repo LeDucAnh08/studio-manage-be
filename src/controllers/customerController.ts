@@ -1,6 +1,5 @@
 import { Request, Response } from 'express';
-import Customer from '../models/Customer';
-import { resolveCurrentSeason } from '../utils/seasonCache';
+import Class from '../models/Class';
 import { sendResponse } from '../utils/response';
 import crypto from 'crypto';
 import BookingWorkflow from '../models/BookingWorkflow';
@@ -14,19 +13,18 @@ import {
 } from '../services/workflowTransactions';
 
 export const getAll = async (req: Request, res: Response): Promise<void> => {
-  const { search, page = '1', limit = '20', season } = req.query as Record<string, string>;
+  const { search, page = '1', limit = '20' } = req.query as Record<string, string>;
   const query: Record<string, unknown> = search ? { $text: { $search: search } } : {};
-  if (season) query.season = season;
   const skip = (Number(page) - 1) * Number(limit);
   const [data, total] = await Promise.all([
-    Customer.find(query).sort({ createdAt: -1 }).skip(skip).limit(Number(limit)).lean(),
-    Customer.countDocuments(query),
+    Class.find(query).sort({ createdAt: -1 }).skip(skip).limit(Number(limit)).lean(),
+    Class.countDocuments(query),
   ]);
   sendResponse(res, 200, true, 'OK', data, { total, page: Number(page), limit: Number(limit) });
 };
 
 export const getOne = async (req: Request, res: Response): Promise<void> => {
-  const customer = await Customer.findById(req.params.id).lean();
+  const customer = await Class.findById(req.params.id).lean();
   if (!customer) {
     sendResponse(res, 404, false, 'Not found');
     return;
@@ -52,7 +50,7 @@ export const getStudents = async (req: Request, res: Response): Promise<void> =>
     sendResponse(res, 400, false, 'Mã lớp không hợp lệ.');
     return;
   }
-  if (!(await Customer.exists({ _id: id }))) {
+  if (!(await Class.exists({ _id: id }))) {
     sendResponse(res, 404, false, 'Không tìm thấy lớp học.');
     return;
   }
@@ -85,10 +83,7 @@ export const getStudents = async (req: Request, res: Response): Promise<void> =>
 
 export const create = async (req: Request, res: Response): Promise<void> => {
   const payload = { ...req.body, createdBy: req.user!._id };
-  if (!payload.season) {
-    payload.season = await resolveCurrentSeason();
-  }
-  const customer = await Customer.create(payload);
+  const customer = await Class.create(payload);
   sendResponse(res, 201, true, 'Tạo khách hàng thành công', customer);
 };
 
@@ -98,7 +93,7 @@ export const update = async (req: Request, res: Response): Promise<void> => {
   delete updateData.createdBy;
   delete updateData._id;
   delete updateData.__v;
-  const customer = await Customer.findByIdAndUpdate(req.params.id, updateData, {
+  const customer = await Class.findByIdAndUpdate(req.params.id, updateData, {
     new: true,
     runValidators: true,
   }).lean();
@@ -123,7 +118,7 @@ export const remove = async (req: Request, res: Response): Promise<void> => {
         409,
         'This customer is linked to a booking or schedule and cannot be deleted',
       );
-    const query = Customer.findByIdAndDelete(req.params.id);
+    const query = Class.findByIdAndDelete(req.params.id);
     if (session) query.session(session);
     customer = await query;
   };
@@ -144,7 +139,7 @@ export const remove = async (req: Request, res: Response): Promise<void> => {
 };
 
 export const getPublicLink = async (req: Request, res: Response): Promise<void> => {
-  const customer = await Customer.findById(req.params.id).select('+publicAccessToken');
+  const customer = await Class.findById(req.params.id).select('+publicAccessToken');
   if (!customer) {
     sendResponse(res, 404, false, 'Not found');
     return;

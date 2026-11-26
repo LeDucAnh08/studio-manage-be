@@ -199,7 +199,7 @@ const workflowSchema = new Schema(
       default: 'intake',
       index: true,
     },
-    customer: { type: Schema.Types.ObjectId, ref: 'Customer' },
+    customer: { type: Schema.Types.ObjectId, ref: 'Class' },
     assignedPhotographer: { type: Schema.Types.ObjectId, ref: 'User' },
     assignedSupportPhotographers: {
       type: [{ type: Schema.Types.ObjectId, ref: 'User' }],

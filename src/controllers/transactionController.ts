@@ -1,8 +1,6 @@
 import { Request, Response } from 'express';
 import Transaction from '../models/Transaction';
-import Season from '../models/Season';
 import type { TransactionResponse, TransactionSummaryRow } from '../types/dto';
-import { resolveSeasonForDate } from '../utils/seasonCache';
 import { sendResponse } from '../utils/response';
 
 const isPrivileged = (roles: number[]): boolean => roles.some((r) => r === 0 || r === 1);
@@ -17,7 +15,6 @@ interface TransactionQuery {
   dateTo?: string;
   page?: string;
   limit?: string;
-  season?: string;
 }
 
 const buildFilter = (q: TransactionQuery) => {
@@ -36,22 +33,10 @@ const buildFilter = (q: TransactionQuery) => {
 };
 
 export const getAll = async (req: Request, res: Response): Promise<void> => {
-  const { page = '1', limit = '20', season, ...rest } = req.query as TransactionQuery;
+  const { page = '1', limit = '20', ...rest } = req.query as TransactionQuery;
   const filter = buildFilter(rest);
   if (!isPrivileged(req.user!.roles)) {
     filter.createdBy = req.user!._id;
-  }
-  // When a season is selected and the user hasn't specified an explicit date range,
-  // use the season's date range so overhead transactions (without a customer) are included.
-  if (season && !rest.dateFrom && !rest.dateTo) {
-    const seasonDoc = await Season.findById(season).select('startDate endDate').lean();
-    if (seasonDoc) {
-      const start = new Date(seasonDoc.startDate);
-      start.setHours(0, 0, 0, 0);
-      const end = new Date(seasonDoc.endDate);
-      end.setHours(23, 59, 59, 999);
-      filter.date = { $gte: start, $lte: end };
-    }
   }
   const skip = (Number(page) - 1) * Number(limit);
   const CUSTOMER_FIELDS =
@@ -93,9 +78,6 @@ export const create = async (req: Request, res: Response): Promise<void> => {
   delete payload.rentalPayment;
   delete payload.conceptOrder;
   delete payload.conceptPayment;
-  if (!payload.season) {
-    payload.season = await resolveSeasonForDate(payload.date);
-  }
   const tx = await Transaction.create(payload);
   sendResponse(res, 201, true, 'Tạo giao dịch thành công', tx);
 };
@@ -122,10 +104,6 @@ export const update = async (req: Request, res: Response): Promise<void> => {
   delete updateData.conceptPayment;
   if (!isPrivileged(req.user!.roles)) {
     delete updateData.createdBy;
-  }
-  // Nếu đổi ngày mà client không gửi season, tự tính lại
-  if (updateData.date && !updateData.season) {
-    updateData.season = await resolveSeasonForDate(updateData.date);
   }
   const tx = await Transaction.findByIdAndUpdate(req.params.id, updateData, {
     new: true,
@@ -189,7 +167,7 @@ export const getSummary = async (req: Request, res: Response): Promise<void> => 
     },
     {
       $lookup: {
-        from: 'customers',
+        from: 'classes',
         localField: '_id',
         foreignField: '_id',
         as: 'customer',

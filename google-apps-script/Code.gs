@@ -3,10 +3,10 @@
  *
  * Khi BE tạo lịch chụp, nó POST tới URL Web App này. Script sẽ:
  *   1. Xác thực `secret` khớp Script Property "SECRET".
- *   2. Trong ROOT_FOLDER_ID: tìm (hoặc tạo) folder theo tên mùa, rồi tìm-hoặc-tạo
+ *   2. Trong ROOT_FOLDER_ID: tìm-hoặc-tạo
  *      folder bộ ảnh con theo tên trường/lớp/ngày (đã tồn tại thì dùng lại, không
  *      tạo trùng).
- *   3. Trong Google Sheet (SHEET_ID): tìm (hoặc tạo) tab theo tên mùa. Tìm dòng
+ *   3. Trong Google Sheet (SHEET_ID): tìm (hoặc tạo) tab Lịch chụp. Tìm dòng
  *      theo scheduleId — đã có thì cập nhật dòng đó, chưa có thì thêm dòng mới.
  *   4. Trả JSON { ok, folderId, folderUrl }.
  *
@@ -15,7 +15,7 @@
  *
  * ─── Cấu hình (Project Settings → Script Properties) ───
  *   SECRET          : chuỗi bí mật, trùng GAS_WEBHOOK_SECRET bên backend
- *   ROOT_FOLDER_ID  : ID folder gốc trên Drive (chứa các folder theo mùa)
+ *   ROOT_FOLDER_ID  : ID folder gốc trên Drive (chứa các bộ ảnh)
  *   SHEET_ID        : ID Google Sheet quản lý
  *
  * ─── Deploy ───
@@ -61,21 +61,11 @@ function doPost(e) {
       return _handleDelete(body, sheetId);
     }
 
-    var seasonName = body.season || 'Chưa phân mùa';
-
-    // 1. Tìm/tạo folder mùa, rồi tìm-hoặc-tạo folder bộ ảnh (không tạo trùng)
-    var root = DriveApp.getFolderById(rootId);
-    var seasonFolder = _getOrCreateChildFolder(root, seasonName);
-    var folderName = _buildFolderName(body);
-    var folder = _getOrCreateChildFolder(seasonFolder, folderName);
-    var folderId = folder.getId();
-    var folderUrl = folder.getUrl();
-
-    // 2. Tìm/tạo tab theo tên mùa
+    // Giữ dòng đã có ở tab cũ; lịch mới dùng tab Lịch chụp.
     var ss = SpreadsheetApp.openById(sheetId);
-    var sheet = ss.getSheetByName(seasonName);
+    var sheet = _findScheduleSheet(ss, body.scheduleId) || ss.getSheetByName('Lịch chụp');
     if (!sheet) {
-      sheet = ss.insertSheet(seasonName);
+      sheet = ss.insertSheet('Lịch chụp');
     }
     if (sheet.getLastRow() === 0) {
       sheet.appendRow(HEADERS);
@@ -84,6 +74,14 @@ function doPost(e) {
     // 3. Tìm dòng theo scheduleId → có thì cập nhật, chưa có thì thêm mới
     var scheduleId = body.scheduleId || '';
     var existingRow = scheduleId ? _findRowByScheduleId(sheet, scheduleId) : -1;
+    var oldFolderUrl = existingRow > 0 ? sheet.getRange(existingRow, 9).getValue() : '';
+    var oldFolderId = String(oldFolderUrl).match(/\/folders\/([a-zA-Z0-9_-]+)/);
+    // Giữ nguyên folder của lịch cũ; chỉ đặt bộ ảnh mới trực tiếp trong folder gốc.
+    var folder = oldFolderId
+      ? DriveApp.getFolderById(oldFolderId[1])
+      : _getOrCreateChildFolder(DriveApp.getFolderById(rootId), _buildFolderName(body));
+    var folderId = folder.getId();
+    var folderUrl = folder.getUrl();
     var createdAt =
       existingRow > 0 ? sheet.getRange(existingRow, 1).getValue() || new Date() : new Date();
 
@@ -134,12 +132,11 @@ function _handleDelete(body, sheetId) {
     }
   }
 
-  // 2. Xoá dòng tương ứng trong tab mùa (theo scheduleId)
+  // 2. Tìm dòng theo scheduleId trên các tab, bao gồm dữ liệu cũ
   var scheduleId = body.scheduleId || '';
-  var seasonName = body.season || 'Chưa phân mùa';
   if (scheduleId) {
     var ss = SpreadsheetApp.openById(sheetId);
-    var sheet = ss.getSheetByName(seasonName);
+    var sheet = _findScheduleSheet(ss, scheduleId);
     if (sheet) {
       var row = _findRowByScheduleId(sheet, scheduleId);
       if (row > 0) {
@@ -152,11 +149,21 @@ function _handleDelete(body, sheetId) {
   return _json({ ok: true, trashedFolder: trashedFolder, deletedRow: deletedRow });
 }
 
+function _findScheduleSheet(ss, scheduleId) {
+  if (!scheduleId) return null;
+  var sheets = ss.getSheets();
+  for (var i = 0; i < sheets.length; i++) {
+    if (_findRowByScheduleId(sheets[i], scheduleId) > 0) return sheets[i];
+  }
+  return null;
+}
+
 // Tìm dòng có scheduleId (cột cuối) khớp; trả về số dòng (1-based) hoặc -1.
 function _findRowByScheduleId(sheet, scheduleId) {
   var lastRow = sheet.getLastRow();
   if (lastRow < 2) return -1; // chỉ có header hoặc rỗng
   var col = HEADERS.length; // scheduleId là cột cuối cùng
+  if (sheet.getRange(1, col).getValue() !== 'scheduleId') return -1;
   var values = sheet.getRange(2, col, lastRow - 1, 1).getValues();
   for (var i = 0; i < values.length; i++) {
     if (String(values[i][0]) === String(scheduleId)) {

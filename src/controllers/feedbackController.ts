@@ -4,7 +4,7 @@ import { publicFeedbackError } from '../utils/publicFormValidation';
 import Feedback from '../models/Feedback';
 import type { FeedbackResponse } from '../types/dto';
 import { sendResponse } from '../utils/response';
-import Customer from '../models/Customer';
+import Class from '../models/Class';
 
 export const getAll = async (req: Request, res: Response): Promise<void> => {
   const { page = '1', limit = '20', isRead } = req.query as Record<string, string>;
@@ -75,7 +75,7 @@ export const submit = async (req: Request, res: Response): Promise<void> => {
       sendResponse(res, 404, false, 'Không tìm thấy form hoặc link không hợp lệ');
       return;
     }
-    const matchedCustomer = await Customer.findById(customer).select('+publicAccessToken');
+    const matchedCustomer = await Class.findById(customer).select('+publicAccessToken');
     if (!matchedCustomer?.publicAccessToken || matchedCustomer.publicAccessToken !== access) {
       sendResponse(res, 404, false, 'Không tìm thấy form hoặc link không hợp lệ');
       return;

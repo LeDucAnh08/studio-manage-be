@@ -1,14 +1,11 @@
 import { Request, Response } from 'express';
-import { isValidObjectId } from 'mongoose';
 import Workflow from '../models/BookingWorkflow';
 import ConceptOrder from '../models/ConceptOrder';
-import Season from '../models/Season';
 import { photographerOrdersPipeline } from './photographerOrdersController';
 import {
   dashboardMetrics,
   dashboardRange,
   photographerDashboard,
-  vietnamDay,
   DashboardMetric,
   DashboardOrder,
   DashboardPeriod,
@@ -18,7 +15,7 @@ import { WorkflowProblem } from '../services/workflowTransactions';
 import { sendResponse } from '../utils/response';
 
 export async function getPhotographerStats(req: Request, res: Response) {
-  const { period = 'month', service = '', season, metric, group = '0', page = '1' } = req.query;
+  const { period = 'month', service = '', metric, group = '0', page = '1' } = req.query;
   if (typeof period !== 'string' || !['month', 'previous', 'quarter', 'year'].includes(period))
     throw new WorkflowProblem(400, 'Kỳ thống kê không hợp lệ.');
   if (
@@ -52,20 +49,6 @@ export async function getPhotographerStats(req: Request, res: Response) {
       ],
     },
   });
-  if (season !== undefined) {
-    if (typeof season !== 'string' || !isValidObjectId(season))
-      throw new WorkflowProblem(400, 'Mùa chụp không hợp lệ.');
-    const selected = await Season.findById(season).select('startDate endDate').lean();
-    if (!selected) throw new WorkflowProblem(404, 'Không tìm thấy mùa chụp.');
-    pipeline.push({
-      $match: {
-        shootDate: {
-          $gte: new Date(vietnamDay(selected.startDate) + 'T00:00:00+07:00'),
-          $lt: new Date(Date.parse(vietnamDay(selected.endDate) + 'T00:00:00+07:00') + 86400000),
-        },
-      },
-    });
-  }
   const rows: DashboardOrder[] = await (service === 'concept' ? ConceptOrder : Workflow).aggregate(
     pipeline,
   );

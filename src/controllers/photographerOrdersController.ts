@@ -119,7 +119,6 @@ export function photographerOrdersPipeline(
               location: '$__schedule.location',
               deadline: '$quote.delivery.targetDate',
               acceptedAt: '$progress.acceptedAt',
-              seasonId: '$__booking.season',
               completedAt: {
                 $max: {
                   $map: {

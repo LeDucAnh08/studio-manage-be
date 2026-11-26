@@ -4,13 +4,11 @@ import { Request, Response } from 'express';
 import PDFDocument from 'pdfkit';
 import path from 'path';
 import Schedule from '../models/Schedule';
-import Customer from '../models/Customer';
-import type { ICustomer } from '../models/Customer';
+import Class from '../models/Class';
+import type { IClass } from '../models/Class';
 import User, { type IUser } from '../models/User';
-import type { ISeason } from '../models/Season';
 import type { ScheduleResponse } from '../types/dto';
 import { createFolderAndLog, deleteFolderAndRow } from '../services/googleSheetService';
-import { resolveSeasonForDate } from '../utils/seasonCache';
 import { sendResponse } from '../utils/response';
 import Costume from '../models/Costume';
 import { ClientSession, Types } from 'mongoose';
@@ -29,7 +27,6 @@ interface ScheduleQuery {
   dateTo?: string;
   page?: string;
   limit?: string;
-  season?: string;
 }
 
 const buildFilter = (q: ScheduleQuery) => {
@@ -298,11 +295,8 @@ export const getMyCalendar = async (req: Request, res: Response): Promise<void> 
 };
 
 export const getAll = async (req: Request, res: Response): Promise<void> => {
-  const { page = '1', limit = '20', season, ...rest } = req.query as ScheduleQuery;
+  const { page = '1', limit = '20', ...rest } = req.query as ScheduleQuery;
   const filter = { ...buildFilter(rest), ...photographerReadScope(req) };
-  if (season) {
-    filter.season = season;
-  }
   const skip = (Number(page) - 1) * Number(limit);
   const USER_FIELDS = '_id username name roles isActive createdAt';
   const CUSTOMER_FIELDS =
@@ -385,14 +379,11 @@ export const create = async (req: Request, res: Response): Promise<void> => {
   delete payload.__v;
   delete payload.createdAt;
   delete payload.updatedAt;
-  if (payload.season === undefined || payload.season === null || payload.season === '') {
-    payload.season = await resolveSeasonForDate(payload.shootDate);
-  }
   if (
     !Types.ObjectId.isValid(payload.customer) ||
-    !(await Customer.exists({ _id: payload.customer }))
+    !(await Class.exists({ _id: payload.customer }))
   ) {
-    sendResponse(res, 400, false, 'Customer is required for a schedule');
+    sendResponse(res, 400, false, 'Class is required for a schedule');
     return;
   }
   let schedule: any;
@@ -403,8 +394,8 @@ export const create = async (req: Request, res: Response): Promise<void> => {
   ) {
     try {
       await withResourceTransaction(async (session) => {
-        if (!(await Customer.exists({ _id: payload.customer }).session(session)))
-          throw new WorkflowProblem(400, 'Customer is required for a schedule');
+        if (!(await Class.exists({ _id: payload.customer }).session(session)))
+          throw new WorkflowProblem(400, 'Class is required for a schedule');
         await ensureScheduleResourcesAvailable(payload, session);
         [schedule] = await Schedule.create([payload], { session });
       });
@@ -418,10 +409,9 @@ export const create = async (req: Request, res: Response): Promise<void> => {
 
   // Lấy bản populate để dựng tên folder Drive
   const full = await Schedule.findById(schedule._id)
-    .populate<{ customer: Pick<ICustomer, 'className' | 'school'> }>('customer', 'className school')
+    .populate<{ customer: Pick<IClass, 'className' | 'school'> }>('customer', 'className school')
     .populate<{ leadPhotographer: Pick<IUser, 'name'> }>('leadPhotographer', 'name')
     .populate<{ supportPhotographers: Pick<IUser, 'name'>[] }>('supportPhotographers', 'name')
-    .populate<{ season: Pick<ISeason, 'name'> }>('season', 'name')
     .lean();
 
   const dateStr = new Date(schedule.shootDate).toLocaleDateString('vi-VN');
@@ -432,11 +422,9 @@ export const create = async (req: Request, res: Response): Promise<void> => {
       const supportNames = (full.supportPhotographers as unknown as { name?: string }[])
         .map((p) => p?.name)
         .filter((n): n is string => Boolean(n));
-      const seasonName = (full.season as unknown as { name?: string })?.name ?? 'Chưa phân mùa';
 
       const result = await createFolderAndLog({
         scheduleId: String(full._id),
-        season: seasonName,
         school: full.customer?.school ?? '',
         className: full.customer?.className ?? '',
         shootDate: dateStr,
@@ -517,18 +505,11 @@ export const update = async (req: Request, res: Response): Promise<void> => {
     }
     const proposed = { ...existing.toObject(), ...updateData };
     if (
-      updateData.shootDate &&
-      (updateData.season === undefined || updateData.season === null || updateData.season === '')
-    ) {
-      updateData.season = await resolveSeasonForDate(updateData.shootDate);
-      proposed.season = updateData.season;
-    }
-    if (
       'customer' in updateData &&
       (!Types.ObjectId.isValid(proposed.customer) ||
-        !(await Customer.exists({ _id: proposed.customer }).session(session ?? null)))
+        !(await Class.exists({ _id: proposed.customer }).session(session ?? null)))
     ) {
-      throw new WorkflowProblem(400, 'Customer is required for a schedule');
+      throw new WorkflowProblem(400, 'Class is required for a schedule');
     }
     if (session)
       await ensureScheduleResourcesAvailable(proposed, session, existing._id as Types.ObjectId);
@@ -558,10 +539,8 @@ export const update = async (req: Request, res: Response): Promise<void> => {
 };
 
 export const remove = async (req: Request, res: Response): Promise<void> => {
-  // Lấy season name + folderId trước khi xoá để dọn folder Drive & dòng Sheet
-  const target = await Schedule.findById(req.params.id)
-    .populate<{ season: Pick<ISeason, 'name'> }>('season', 'name')
-    .lean();
+  // Lấy folderId trước khi xoá để dọn folder Drive & dòng Sheet
+  const target = await Schedule.findById(req.params.id).lean();
   if (!target) {
     sendResponse(res, 404, false, 'Not found');
     return;
@@ -599,7 +578,6 @@ export const remove = async (req: Request, res: Response): Promise<void> => {
   // Dọn dẹp Google Drive + Sheet (chạy nền, không chặn response)
   void deleteFolderAndRow({
     scheduleId: String(target._id),
-    season: (target.season as unknown as { name?: string })?.name ?? 'Chưa phân mùa',
     folderId: target.driveFolderId,
   }).catch((e: unknown) => console.error('[Schedule] dọn Google Drive/Sheet khi xoá thất bại:', e));
 };
@@ -607,7 +585,7 @@ export const remove = async (req: Request, res: Response): Promise<void> => {
 export const exportContract = async (req: Request, res: Response): Promise<void> => {
   const schedule = await Schedule.findById(req.params.id)
     .populate<{
-      customer: ICustomer;
+      customer: IClass;
     }>('customer', 'className school contactName contactPhone total')
     .populate<{ leadPhotographer: IUser }>('leadPhotographer', 'username name')
     .populate<{ supportPhotographers: IUser[] }>('supportPhotographers', 'username name');
@@ -644,7 +622,7 @@ export const exportContract = async (req: Request, res: Response): Promise<void>
       return;
     }
   }
-  const customer = schedule.customer as unknown as ICustomer;
+  const customer = schedule.customer as unknown as IClass;
   const lead = schedule.leadPhotographer as unknown as IUser | null;
   const supports = (schedule.supportPhotographers as unknown as IUser[]) ?? [];
 

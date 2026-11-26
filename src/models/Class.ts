@@ -1,6 +1,6 @@
 import mongoose, { Document, Schema, Types } from 'mongoose';
 
-export interface ICustomer extends Document {
+export interface IClass extends Document {
   className: string;
   school?: string;
   contactName: string;
@@ -11,11 +11,10 @@ export interface ICustomer extends Document {
   totalFemale: number;
   notes?: string;
   createdBy?: Types.ObjectId;
-  season?: Types.ObjectId | null;
   publicAccessToken?: string;
 }
 
-const customerSchema = new Schema<ICustomer>(
+const classSchema = new Schema<IClass>(
   {
     className: { type: String, required: true, trim: true },
     school: { type: String, trim: true },
@@ -27,14 +26,12 @@ const customerSchema = new Schema<ICustomer>(
     totalFemale: { type: Number, required: true, default: 0 },
     notes: { type: String },
     createdBy: { type: Schema.Types.ObjectId, ref: 'User' },
-    season: { type: Schema.Types.ObjectId, ref: 'Season', default: null },
     publicAccessToken: { type: String, select: false, index: true },
   },
-  { timestamps: true },
+  { timestamps: true, collection: 'classes' },
 );
 
-customerSchema.index({ className: 'text', school: 'text' });
-customerSchema.index({ season: 1, createdAt: -1 });
-customerSchema.index({ createdBy: 1, createdAt: -1 });
+classSchema.index({ className: 'text', school: 'text' });
+classSchema.index({ createdBy: 1, createdAt: -1 });
 
-export default mongoose.model<ICustomer>('Customer', customerSchema);
+export default mongoose.model<IClass>('Class', classSchema);

@@ -1,20 +1,13 @@
 import mongoose, { Document, Schema, Types } from 'mongoose';
 import bcrypt from 'bcryptjs';
+import { ACTIVE_ROLES, type UserRole } from './Role';
 
-// Role IDs are stable: retired IDs 2, 4 and 5 must never be reassigned.
-export type UserRole = 0 | 1 | 3 | 6;
-export const ACTIVE_ROLES: UserRole[] = [0, 1, 3, 6];
+// Preserve existing imports and the numeric roles API while referencing Role documents.
+export { ACTIVE_ROLES, ROLE_LABELS, type UserRole } from './Role';
 
 // Explicitly exclude legacy or internal fields even before a database cleanup runs.
 export const USER_PUBLIC_FIELDS =
   '_id username name roles isActive email emailVerifiedAt notificationReadAt sourceAccountRequest createdAt updatedAt __v';
-
-export const ROLE_LABELS: Record<UserRole, string> = {
-  0: 'Superadmin',
-  1: 'Admin',
-  3: 'Thợ chụp ảnh',
-  6: 'Khách hàng',
-};
 
 export interface IUser extends Document {
   username: string;
@@ -50,7 +43,7 @@ const userSchema = new Schema<IUser>(
       select: false,
     },
     password: { type: String, required: true, select: false },
-    roles: { type: [{ type: Number, enum: ACTIVE_ROLES }], default: [6] },
+    roles: { type: [{ type: Number, ref: 'Role', enum: ACTIVE_ROLES }], default: [6] },
     notificationReadAt: { type: Date },
     sourceAccountRequest: {
       type: Schema.Types.ObjectId,

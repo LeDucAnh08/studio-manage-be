@@ -2,11 +2,11 @@ import crypto, { createHash } from 'crypto';
 import { Request, Response } from 'express';
 import { ClientSession, Types, isValidObjectId } from 'mongoose';
 import Booking from '../models/Booking';
-import Package from '../models/Package';
+import PackageDetail from '../models/PackageDetail';
 import BookingWorkflow, { IBookingWorkflow } from '../models/BookingWorkflow';
 import Category from '../models/Category';
 import Costume from '../models/Costume';
-import Customer from '../models/Customer';
+import Class from '../models/Class';
 import Feedback from '../models/Feedback';
 import Schedule from '../models/Schedule';
 import Student from '../models/Student';
@@ -431,13 +431,11 @@ export async function workflowListRows(bookings: any[], actor: Actor) {
   const ids = bookings.map((booking: any) => booking._id);
   const packageIds = bookings.map((booking) => booking.package).filter(Boolean);
   const packages = packageIds.length
-    ? await Package.find({ _id: { $in: packageIds } })
-        .select('details.gallery')
+    ? await PackageDetail.find({ package: { $in: packageIds } })
+        .select('package gallery')
         .lean()
     : [];
-  const thumbnails = new Map(
-    packages.map((pkg) => [String(pkg._id), pkg.details?.gallery?.[0]?.id]),
-  );
+  const thumbnails = new Map(packages.map((pkg) => [String(pkg.package), pkg.gallery?.[0]?.id]));
   const workflows = await BookingWorkflow.find({ booking: { $in: ids } }).lean();
   const schedules = await Schedule.find({
     _id: { $in: workflows.map((workflow) => workflow.resources?.schedule).filter(Boolean) },
@@ -888,7 +886,7 @@ const createLinkedCustomer = async (
   const members = workflow.members;
   const totalMale = members.filter((member: any) => member.gender === 'male').length;
   const totalFemale = members.filter((member: any) => member.gender === 'female').length;
-  const [customer] = await Customer.create(
+  const [customer] = await Class.create(
     [
       {
         className: booking.className || `${booking.contactName} - ${booking.packageName}`,
@@ -983,7 +981,7 @@ const syncPackageMembers = async (
     await Student.deleteMany({ _id: { $in: removed }, customer: workflow.customer }).session(
       session,
     );
-  await Customer.updateOne(
+  await Class.updateOne(
     { _id: workflow.customer },
     {
       $set: {
@@ -1155,7 +1153,6 @@ const confirmWorkflowResources = async (
         status: 'confirmed',
         notes: booking.note,
         workflowBooking: booking._id,
-        season: null,
       },
     ],
     { session },
@@ -2244,7 +2241,7 @@ export const executeWorkflowAction = async (req: Request, res: Response): Promis
       res,
       503,
       false,
-      'Customer workflow writes are disabled until transactional MongoDB is enabled.',
+      'Class workflow writes are disabled until transactional MongoDB is enabled.',
     );
     return;
   }
@@ -2283,7 +2280,7 @@ export const replaceWorkflowMembers = async (req: Request, res: Response): Promi
       res,
       503,
       false,
-      'Customer workflow writes are disabled until transactional MongoDB is enabled.',
+      'Class workflow writes are disabled until transactional MongoDB is enabled.',
     );
     return;
   }
@@ -2543,7 +2540,7 @@ export const submitPublicMember = async (req: Request, res: Response): Promise<v
       res,
       503,
       false,
-      'Customer workflow writes are disabled until transactional MongoDB is enabled.',
+      'Class workflow writes are disabled until transactional MongoDB is enabled.',
     );
     return;
   }
