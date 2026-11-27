@@ -45,6 +45,6 @@ const schema = new Schema(
     active: { type: Boolean, default: true },
     version: { type: Number, default: 0 },
   },
-  { timestamps: true },
+  { timestamps: true, collection: 'concept_details' },
 );
-export default model('ConceptPackage', schema);
+export default model('ConceptDetail', schema);

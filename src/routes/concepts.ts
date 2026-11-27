@@ -6,7 +6,7 @@ import {
 } from '../services/photographerPortfolio';
 import mongoose, { ClientSession } from 'mongoose';
 import Concept from '../models/Concept';
-import Package from '../models/ConceptPackage';
+import Package from '../models/ConceptDetail';
 import Profile from '../models/PhotographerProfile';
 import Settings from '../models/ConceptSettings';
 import User from '../models/User';

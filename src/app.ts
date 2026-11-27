@@ -30,7 +30,7 @@ import conceptOrderRoutes, { publicConceptAlbums } from './routes/conceptOrders'
 import { expireConceptOrders } from './services/conceptBooking';
 import { conceptEnabled } from './services/conceptPolicy';
 import Concept from './models/Concept';
-import ConceptPackage from './models/ConceptPackage';
+import ConceptDetail from './models/ConceptDetail';
 import PhotographerProfile from './models/PhotographerProfile';
 import ConceptOrder from './models/ConceptOrder';
 import ConceptAlbum from './models/ConceptAlbum';
@@ -133,7 +133,7 @@ connectDB().then(async () => {
   if (conceptEnabled()) {
     for (const model of [
       Concept,
-      ConceptPackage,
+      ConceptDetail,
       PhotographerProfile,
       ConceptOrder,
       ConceptAlbum,

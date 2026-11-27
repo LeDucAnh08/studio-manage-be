@@ -28,7 +28,7 @@ const schema = new Schema(
   {
     client: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     concept: { type: Schema.Types.ObjectId, ref: 'Concept', required: true },
-    package: { type: Schema.Types.ObjectId, ref: 'ConceptPackage', required: true },
+    package: { type: Schema.Types.ObjectId, ref: 'ConceptDetail', required: true },
     snapshot: { type: Schema.Types.Mixed, required: true },
     contactName: { type: String, required: true },
     phone: { type: String, required: true },

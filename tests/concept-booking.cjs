@@ -68,7 +68,7 @@ test('concept HTTP, shared resources, SePay, operations and Drive album', async 
   await mongoose.connection.dropDatabase();
   const User = require('../src/models/User').default,
     Concept = require('../src/models/Concept').default,
-    Package = require('../src/models/ConceptPackage').default,
+    Package = require('../src/models/ConceptDetail').default,
     Profile = require('../src/models/PhotographerProfile').default,
     Order = require('../src/models/ConceptOrder').default,
     Album = require('../src/models/ConceptAlbum').default,

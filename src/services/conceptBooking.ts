@@ -1,7 +1,7 @@
 import { randomBytes, randomUUID } from 'crypto';
 import { ClientSession, Types } from 'mongoose';
 import Concept from '../models/Concept';
-import Package from '../models/ConceptPackage';
+import Package from '../models/ConceptDetail';
 import Order from '../models/ConceptOrder';
 import Settings from '../models/ConceptSettings';
 import Profile from '../models/PhotographerProfile';

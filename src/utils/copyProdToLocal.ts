@@ -28,6 +28,7 @@ const COLLECTIONS = [
   'categories',
   'packages',
   'package_details',
+  'concept_details',
   'classes',
   'schedules',
   'students',
@@ -81,6 +82,8 @@ async function main(): Promise<void> {
 
   // Lấy danh sách collection thực tế từ prod (bao gồm cả collection ngoài danh sách cứng)
   const prodCollections = (await prod.db!.listCollections().toArray()).map((c) => c.name);
+  if (prodCollections.includes('conceptpackages'))
+    throw new Error('Migrate the source concept catalog to concept_details before copying it');
   console.log(`\n📦 Collection tìm thấy trên PROD: ${prodCollections.join(', ')}\n`);
 
   // Gộp: ưu tiên thứ tự từ COLLECTIONS, thêm phần còn lại ở cuối
