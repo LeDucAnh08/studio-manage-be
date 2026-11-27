@@ -12,6 +12,7 @@ import { executeAlbumOperation } from '../services/backgroundOperations';
 import { processEmailJob } from './email';
 import { dispatchPendingJobs } from './outboxDispatcher';
 import { runMaintenance } from './maintenance';
+import { assertSharedAlbumStore } from '../services/sharedAlbumStore';
 
 dotenv.config({ path: path.resolve(__dirname, '../../.env') });
 
@@ -33,6 +34,7 @@ async function main() {
   const config = queueConfig();
   if (config.mode !== 'bullmq') throw new Error('Worker requires BullMQ mode');
   await mongoose.connect(process.env.MONGO_URI!);
+  await assertSharedAlbumStore();
   await assertJobRuntime();
   emailConfig();
   await Promise.all([EmailOutbox.init(), Operation.init()]);

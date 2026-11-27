@@ -1,10 +1,9 @@
-import { Schema, model } from 'mongoose';
+import { Schema } from 'mongoose';
+import Album from './Album';
 
 const schema = new Schema(
   {
-    order: { type: Schema.Types.ObjectId, ref: 'ConceptOrder', required: true, unique: true },
-    title: { type: String, required: true },
-    version: { type: Number, default: 0 },
+    order: { type: Schema.Types.ObjectId, ref: 'ConceptOrder', required: true },
     status: {
       type: String,
       enum: [
@@ -33,5 +32,11 @@ const schema = new Schema(
   },
   { timestamps: true },
 );
-schema.index({ 'share.publicId': 1 }, { sparse: true, unique: true });
-export default model('ConceptAlbum', schema);
+schema.index(
+  { 'share.publicId': 1 },
+  {
+    unique: true,
+    partialFilterExpression: { service: 'concept', 'share.publicId': { $type: 'string' } },
+  },
+);
+export default Album.discriminator('ConceptAlbum', schema, 'concept');

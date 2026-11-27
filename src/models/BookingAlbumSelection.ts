@@ -1,7 +1,7 @@
 import mongoose, { Schema } from 'mongoose';
 
 const schema = new Schema({
-  album: { type: Schema.Types.ObjectId, ref: 'BookingAlbum', required: true },
+  album: { type: Schema.Types.ObjectId, ref: 'Album', required: true },
   round: { type: Number, required: true },
   driveId: { type: String, required: true },
   name: { type: String, required: true },

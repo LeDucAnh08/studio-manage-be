@@ -197,7 +197,11 @@ router.get(
     const version = req.query.version
       ? integer(Number(req.query.version), 1, access.album.deliveryVersion)
       : access.album.deliveryVersion;
-    const photos = await Photo.find({ album: access.album._id, version, available: true }).sort({
+    const photos = await Photo.find({
+      album: access.album._id,
+      deliveryVersion: version,
+      available: true,
+    }).sort({
       order: 1,
     });
     if (!photos.length) throw new WorkflowProblem(404, 'Chưa có ảnh bàn giao.');

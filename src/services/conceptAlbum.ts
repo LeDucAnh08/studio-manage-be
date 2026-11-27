@@ -48,7 +48,9 @@ export async function guestAccess(publicId: string, token: unknown) {
   return { order, album, staff: false };
 }
 export async function albumDto(album: any, staff: boolean, guest = false) {
-  const photos = await Photo.find({ album: album._id }).sort({ version: 1, order: 1 }).lean();
+  const photos = await Photo.find({ album: album._id })
+    .sort({ deliveryVersion: 1, order: 1 })
+    .lean();
   return {
     id: String(album._id),
     title: album.title,
@@ -70,11 +72,11 @@ export async function albumDto(album: any, staff: boolean, guest = false) {
         }
       : {}),
     photos: photos
-      .filter((p) => staff || p.version >= 0)
+      .filter((p) => staff || p.deliveryVersion >= 0)
       .map((p) => ({
         id: String(p._id),
         name: p.drive.name,
-        version: p.version,
+        version: p.deliveryVersion,
         width: p.drive.width,
         height: p.drive.height,
         available: p.available,
@@ -163,14 +165,14 @@ export async function albumCommand(
       album.title = text(b.title || album.title, 160);
       album.folders = b.folders;
       await Photo.updateMany(
-        { album: album._id, version: 0 },
+        { album: album._id, deliveryVersion: 0 },
         { $set: { available: false } },
         { session },
       );
       for (const [index, image] of source!.images.entries()) {
         const previous = await Photo.findOne({
           album: album._id,
-          version: 0,
+          deliveryVersion: 0,
           'drive.id': image.id,
         }).session(session);
         if (previous) {
@@ -188,9 +190,12 @@ export async function albumCommand(
           previous.order = index;
           await previous.save({ session });
         } else
-          await Photo.create([{ album: album._id, version: 0, drive: image, order: index }], {
-            session,
-          });
+          await Photo.create(
+            [{ album: album._id, deliveryVersion: 0, drive: image, order: index }],
+            {
+              session,
+            },
+          );
       }
     } else if (operation === 'publish') {
       if (!albumOpen(order) || album.status !== 'draft')
@@ -201,7 +206,7 @@ export async function albumCommand(
       const photo = await Photo.findOne({
         _id: objectId(b.photoId),
         album: album._id,
-        version: 0,
+        deliveryVersion: 0,
       }).session(session);
       if (!photo) throw new WorkflowProblem(404, 'Không có ảnh này.');
       if (!photo.available && b.selected !== false)
@@ -219,7 +224,7 @@ export async function albumCommand(
     } else if (operation === 'finalize') {
       if (album.status !== 'selecting' || b.accepted !== true)
         throw new WorkflowProblem(409, 'Đồng ý phí phát sinh trước khi chốt.');
-      const photos = await Photo.find({ album: album._id, version: 0, selected: true })
+      const photos = await Photo.find({ album: album._id, deliveryVersion: 0, selected: true })
         .sort({ order: 1 })
         .session(session);
       if (!photos.length || photos.some((p) => !p.available))
@@ -311,7 +316,14 @@ export async function albumCommand(
       album.deliveryVersion += 1;
       for (const [index, image] of source!.images.entries())
         await Photo.create(
-          [{ album: album._id, version: album.deliveryVersion, drive: image, order: index }],
+          [
+            {
+              album: album._id,
+              deliveryVersion: album.deliveryVersion,
+              drive: image,
+              order: index,
+            },
+          ],
           { session },
         );
       album.deliveries.push({
@@ -341,7 +353,7 @@ export async function albumCommand(
           !(await Photo.exists({
             _id: photoId,
             album: album._id,
-            version: album.deliveryVersion,
+            deliveryVersion: album.deliveryVersion,
           }).session(session))
         )
           throw new WorkflowProblem(400, 'Ảnh góp ý không đúng phiên bản hoặc bị trùng.');
@@ -488,7 +500,7 @@ export async function photoFor(
   if (download && (guest || !access.album.allowDownload))
     throw new WorkflowProblem(403, 'Không được tải ảnh.');
   const photo = await Photo.findOne({ _id: objectId(photoId), album: access.album._id });
-  if (!photo || !photo.available || (download && photo.version === 0))
+  if (!photo || !photo.available || (download && photo.deliveryVersion === 0))
     throw new WorkflowProblem(404, 'Không tìm thấy ảnh bàn giao.');
   return photo;
 }

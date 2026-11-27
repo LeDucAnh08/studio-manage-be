@@ -1,9 +1,9 @@
-import { Schema, model } from 'mongoose';
+import { Schema } from 'mongoose';
+import Photo from './Photo';
 
 const schema = new Schema(
   {
-    album: { type: Schema.Types.ObjectId, ref: 'ConceptAlbum', required: true },
-    version: { type: Number, required: true }, // 0: color-corrected selection; >0: immutable delivery.
+    deliveryVersion: { type: Number, required: true }, // 0: selection; >0: immutable delivery.
     drive: { type: Schema.Types.Mixed, required: true },
     available: { type: Boolean, default: true },
     selected: { type: Boolean, default: false },
@@ -12,5 +12,4 @@ const schema = new Schema(
   },
   { timestamps: true },
 );
-schema.index({ album: 1, version: 1, 'drive.id': 1 }, { unique: true });
-export default model('ConceptPhoto', schema);
+export default Photo.discriminator('ConceptPhoto', schema, 'concept_drive');

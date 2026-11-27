@@ -276,9 +276,9 @@ const workflowSchema = new Schema(
       },
       deliveryVersion: { type: Number, default: 0 },
       deliveryUrl: { type: String },
-      photos: { type: [{ type: Schema.Types.ObjectId, ref: 'BookingDeliveryPhoto' }], default: [] },
+      photos: { type: [{ type: Schema.Types.ObjectId, ref: 'Photo' }], default: [] },
       drivePhotos: {
-        type: [{ type: Schema.Types.ObjectId, ref: 'BookingAlbumPhoto' }],
+        type: [{ type: Schema.Types.ObjectId, ref: 'Photo' }],
         default: [],
       },
       deliveredAt: Date,
@@ -292,12 +292,12 @@ const workflowSchema = new Schema(
         version: { type: Number, required: true },
         deliveryUrl: { type: String },
         photos: {
-          type: [{ type: Schema.Types.ObjectId, ref: 'BookingDeliveryPhoto' }],
+          type: [{ type: Schema.Types.ObjectId, ref: 'Photo' }],
           default: [],
         },
         deliveredAt: { type: Date, required: true },
         drivePhotos: {
-          type: [{ type: Schema.Types.ObjectId, ref: 'BookingAlbumPhoto' }],
+          type: [{ type: Schema.Types.ObjectId, ref: 'Photo' }],
           default: [],
         },
         deliveredBy: { type: Schema.Types.ObjectId, ref: 'User' },

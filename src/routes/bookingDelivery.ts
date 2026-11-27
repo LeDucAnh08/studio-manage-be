@@ -2,11 +2,12 @@ import { Router } from 'express';
 import multer from 'multer';
 import sharp from 'sharp';
 import path from 'node:path';
-import { randomUUID, createHash } from 'node:crypto';
+import { randomUUID, randomBytes, createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { mkdir, stat, unlink, open } from 'node:fs/promises';
 import { Types, isValidObjectId } from 'mongoose';
 import Photo from '../models/BookingDeliveryPhoto';
+import Album from '../models/BookingAlbum';
 import { asyncHandler } from '../middleware/asyncHandler';
 import { sendResponse } from '../utils/response';
 import {
@@ -213,10 +214,24 @@ router.post(
           existing.reduce((sum, item) => sum + item.bytes, bytes) > 2 * 1024 ** 3
         )
           throw new WorkflowProblem(409, 'Đơn đã đạt giới hạn lưu trữ 1000 ảnh hoặc 2 GB.');
+        let album = await Album.findOne({ booking: req.params.id }).session(session);
+        if (!album) {
+          [album] = await Album.create(
+            [
+              {
+                booking: req.params.id,
+                title: 'Album',
+                publicId: randomBytes(18).toString('base64url'),
+              },
+            ],
+            { session },
+          );
+        }
         const [created] = await Photo.create(
           [
             {
               _id: id,
+              album: album._id,
               booking: req.params.id,
               originalPhotoId,
               uploadedBy: req.user!._id,

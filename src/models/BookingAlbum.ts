@@ -1,13 +1,12 @@
-import mongoose, { Schema } from 'mongoose';
+import { Schema } from 'mongoose';
+import Album from './Album';
 const folder = new Schema({ id: String, resourceKey: String, name: String }, { _id: false });
 const schema = new Schema(
   {
-    booking: { type: Schema.Types.ObjectId, ref: 'Booking', required: true, unique: true },
-    title: { type: String, required: true, maxlength: 160 },
-    publicId: { type: String, required: true, unique: true },
+    booking: { type: Schema.Types.ObjectId, ref: 'Booking', required: true },
+    publicId: { type: String, required: true },
     tokenHash: { type: String, select: false },
     shared: { type: Boolean, default: false },
-    version: { type: Number, default: 0 },
     status: { type: String, enum: ['draft', 'open', 'closed'], default: 'draft' },
     limit: { type: Number, default: 0, min: 0, max: 10000 },
     coverId: String,
@@ -19,4 +18,5 @@ const schema = new Schema(
   },
   { timestamps: true },
 );
-export default mongoose.model('BookingAlbum', schema);
+schema.index({ publicId: 1 }, { unique: true, partialFilterExpression: { service: 'yearbook' } });
+export default Album.discriminator('BookingAlbum', schema, 'yearbook');

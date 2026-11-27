@@ -902,7 +902,7 @@ test('concept HTTP, shared resources, SePay, operations and Drive album', async 
     async () => {
       const photos = await Photo.find({
         album: (await Album.findOne({ order: albumOrder._id }))._id,
-        version: 0,
+        deliveryVersion: 0,
       });
       for (const p of photos)
         assert.equal(

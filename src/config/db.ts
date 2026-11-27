@@ -1,10 +1,12 @@
 import mongoose from 'mongoose';
 import { ensureRoles } from '../services/roles';
 import PackageDetail from '../models/PackageDetail';
+import { assertSharedAlbumStore } from '../services/sharedAlbumStore';
 
 const connectDB = async (): Promise<void> => {
   try {
     await mongoose.connect(process.env.MONGO_URI as string);
+    await assertSharedAlbumStore();
     await ensureRoles();
     await PackageDetail.init();
     console.log('MongoDB connected to database:', mongoose.connection.name);

@@ -145,6 +145,7 @@ export function photographerOrdersPipeline(
         from: ConceptAlbum.collection.name,
         localField: '_id',
         foreignField: 'order',
+        pipeline: [{ $match: { service: 'concept' } }],
         as: '__albums',
       },
     },
