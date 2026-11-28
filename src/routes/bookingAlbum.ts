@@ -1,5 +1,9 @@
-import { backgroundJobsEnabled } from '../config/queue';
-import { submitAlbumOperation, operationDto } from '../services/backgroundOperations';
+import {
+  submitAlbumOperation,
+  operationDto,
+  shouldQueueAlbumSync,
+  resolvePendingAlbumOperations,
+} from '../services/backgroundOperations';
 import { executeBookingAlbumCommand } from '../services/bookingAlbumCommand';
 import { Router, type Response } from 'express';
 import { isValidObjectId, type Types } from 'mongoose';
@@ -127,7 +131,10 @@ albumRoutes.post(
     )
       throw new WorkflowProblem(404, 'Không tìm thấy thao tác.');
     const key = req.get('Idempotency-Key') || '';
-    if (backgroundJobsEnabled() && ['configure', 'sync', 'delivery-sync'].includes(operation)) {
+    if (
+      ['configure', 'sync', 'delivery-sync'].includes(operation) &&
+      (await shouldQueueAlbumSync())
+    ) {
       const job = await submitAlbumOperation(
         'yearbook',
         req.params.id,
@@ -141,13 +148,11 @@ albumRoutes.post(
       });
       return;
     }
-    sendResponse(
-      res,
-      200,
-      true,
-      'Đã lưu album.',
-      await executeBookingAlbumCommand(req.params.id, req.user!, operation, req.body, key),
-    );
+    const album = await executeBookingAlbumCommand(req.params.id, req.user!, operation, req.body, key);
+    if (['configure', 'sync', 'delivery-sync'].includes(operation)) {
+      await resolvePendingAlbumOperations('yearbook', req.params.id);
+    }
+    sendResponse(res, 200, true, 'Đã lưu album.', album);
   }),
 );
 albumRoutes.get(

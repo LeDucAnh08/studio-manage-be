@@ -385,7 +385,11 @@ test('concept HTTP, shared resources, SePay, operations and Drive album', async 
     assert.equal((await request('GET', '/concepts', '')).status, 401);
     assert.equal((await request('GET', '/concepts', 'client')).status, 200);
     assert.equal((await request('GET', '/concepts/manage', 'client')).status, 403);
+    const prevEmailGate = process.env.CUSTOMER_EMAIL_VERIFICATION_ENABLED;
+    process.env.CUSTOMER_EMAIL_VERIFICATION_ENABLED = 'true';
     assert.equal((await request('POST', '/concept-orders', 'unverified', body())).status, 403);
+    if (prevEmailGate === undefined) delete process.env.CUSTOMER_EMAIL_VERIFICATION_ENABLED;
+    else process.env.CUSTOMER_EMAIL_VERIFICATION_ENABLED = prevEmailGate;
     const r = await request(
       'GET',
       `/concepts/availability?packageId=${pkg._id}&day=${future().slice(0, 10)}`,

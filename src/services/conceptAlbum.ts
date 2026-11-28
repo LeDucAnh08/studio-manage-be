@@ -2,8 +2,10 @@ import { createHash, createHmac, randomUUID } from 'crypto';
 import { ClientSession } from 'mongoose';
 import Album from '../models/ConceptAlbum';
 import Photo from '../models/ConceptPhoto';
+import DeliveryPhoto from '../models/ConceptDeliveryPhoto';
 import Order from '../models/ConceptOrder';
 import { readAlbumPhoto } from './bookingAlbum';
+import { validateConceptDeliveryPhotos } from './conceptDelivery';
 import { listDriveFolders } from './driveAlbumSource';
 import {
   accessOrder,
@@ -14,7 +16,7 @@ import {
   event,
   owner,
 } from './conceptBooking';
-import { beginCommand, commandKey, objectId, text } from './conceptPolicy';
+import { beginCommand, commandKey, integer, objectId, text } from './conceptPolicy';
 import { WorkflowProblem, withResourceTransaction } from './workflowTransactions';
 
 const hash = (token: string) => createHash('sha256').update(token).digest('hex');
@@ -48,40 +50,98 @@ export async function guestAccess(publicId: string, token: unknown) {
   return { order, album, staff: false };
 }
 export async function albumDto(album: any, staff: boolean, guest = false) {
-  const photos = await Photo.find({ album: album._id })
-    .sort({ deliveryVersion: 1, order: 1 })
-    .lean();
+  const [photos, uploads] = await Promise.all([
+    Photo.find({ album: album._id })
+      .sort({ deliveryVersion: 1, order: 1 })
+      .lean(),
+    DeliveryPhoto.find({
+      order: album.order,
+      deletedAt: { $exists: false },
+      ...(!staff ? { 'publishedVersions.0': { $exists: true } } : {}),
+    })
+      .select('originalPhotoId publishedVersions name width height')
+      .sort({ createdAt: 1, _id: 1 })
+      .lean(),
+  ]);
+  const localPhotos = (uploads as any[]).flatMap((photo) =>
+    (photo.publishedVersions || []).map((version: number) => ({
+      id: String(photo._id),
+      source: 'local' as const,
+      name: photo.name,
+      version,
+      width: photo.width,
+      height: photo.height,
+      available: true,
+      ...(photo.originalPhotoId && { originalPhotoId: String(photo.originalPhotoId) }),
+    })),
+  );
+  const latestReplacements = new Map<string, any>();
+  const draftReplacements: any[] = [];
+  for (const photo of uploads as any[]) {
+    if (!photo.originalPhotoId) continue;
+    const originalId = String(photo.originalPhotoId);
+    const version = photo.publishedVersions?.at(-1);
+    const dto = {
+      id: String(photo._id),
+      source: 'local' as const,
+      name: photo.name,
+      version: version ?? -1,
+      width: photo.width,
+      height: photo.height,
+      available: true,
+      originalPhotoId: originalId,
+    };
+    if (version === undefined) draftReplacements.push(dto);
+    else if (version > (latestReplacements.get(originalId)?.version ?? 0)) {
+      latestReplacements.set(originalId, dto);
+    }
+  }
+  const replacements = [...latestReplacements.values(), ...(staff ? draftReplacements : [])];
   return {
     id: String(album._id),
     title: album.title,
     version: album.version,
     status: album.status,
+    limit: album.limit || 0,
+    coverId: album.coverId,
     selectionRound: album.selectionRound,
     deliveryVersion: album.deliveryVersion,
     extraAmount: guest ? undefined : album.extraAmount,
     allowDownload: !guest && album.allowDownload,
     selections: guest ? undefined : album.selections,
-    deliveries: album.deliveries.map((d: any) => ({ version: d.version, at: d.at })),
+    deliveries: album.deliveries.map((d: any) => ({
+      version: d.version,
+      at: d.at,
+      ...(d.source && { source: d.source }),
+    })),
     feedbackRounds: guest ? undefined : album.feedbackRounds,
     paidRequests: guest ? undefined : album.paidRequests,
     freeRoundsUsed: album.feedbackRounds.length,
+    ...(replacements.length ? { replacements } : {}),
     ...(staff
       ? {
           folders: album.folders,
           share: { publicId: album.share?.publicId, expiresAt: album.share?.expiresAt },
         }
       : {}),
-    photos: photos
-      .filter((p) => staff || p.deliveryVersion >= 0)
-      .map((p) => ({
-        id: String(p._id),
-        name: p.drive.name,
-        version: p.deliveryVersion,
-        width: p.drive.width,
-        height: p.drive.height,
-        available: p.available,
-        ...(guest ? {} : { selected: p.selected, note: p.note }),
-      })),
+    photos: [
+      ...photos
+        .filter((p) => staff || p.deliveryVersion >= 0)
+        .map((p) => ({
+          id: String(p._id),
+          source: 'drive' as const,
+          driveId: p.drive.id,
+          sourceVersion: p.drive.checksum || p.drive.version,
+          folderId: p.drive.folderId,
+          name: p.drive.name,
+          version: p.deliveryVersion,
+          width: p.drive.width,
+          height: p.drive.height,
+          available: p.available,
+          ...(guest ? {} : { selected: p.selected, note: p.note }),
+        })),
+      ...localPhotos,
+    ],
   };
 }
 const requireStaff = (order: any, actor: any) => {
@@ -102,10 +162,17 @@ export async function albumCommand(
 ) {
   commandKey(key);
   let source = suppliedSource;
-  if (['sync', 'deliver'].includes(operation)) {
+  const needsDriveDeliver =
+    operation === 'deliver' && !Array.isArray(b.deliveryPhotoIds) && !b.driveAlbum;
+  let resolvedFolders: string[] | undefined = Array.isArray(b.folders) ? b.folders : undefined;
+  if (operation === 'sync' || operation === 'delivery-sync' || needsDriveDeliver) {
     const order = await accessOrder(id, actor);
     requireStaff(order, actor);
-    source ||= await listDriveFolders(b.folders);
+    if (!resolvedFolders && operation === 'sync') {
+      const existingAlbum = await Album.findOne({ order: id }).select('folders').lean();
+      resolvedFolders = existingAlbum?.folders;
+    }
+    source ||= await listDriveFolders(resolvedFolders);
     if (!source.images.length || source.images.length > 500)
       throw new WorkflowProblem(400, 'Mỗi bộ ảnh cần từ 1 đến 500 ảnh.');
   }
@@ -127,8 +194,10 @@ export async function albumCommand(
       .session(session);
     if (!album) {
       requireStaff(order, actor);
-      if (operation !== 'sync' || b.expectedVersion !== 0)
-        throw new WorkflowProblem(404, 'Đồng bộ ảnh để tạo album.');
+      const canCreate =
+        (operation === 'sync' && b.expectedVersion === 0) ||
+        (operation === 'deliver' && Array.isArray(b.deliveryPhotoIds) && b.expectedVersion === 0);
+      if (!canCreate) throw new WorkflowProblem(404, 'Đồng bộ ảnh để tạo album.');
       album = new Album({ order: id, title: order.snapshot.name });
     }
     if (!beginCommand(album, key, { actor: String(actor._id), operation, ...b }, b.expectedVersion))
@@ -142,6 +211,8 @@ export async function albumCommand(
     if (
       [
         'sync',
+        'delivery-sync',
+        'cover',
         'publish',
         'start',
         'deliver',
@@ -163,7 +234,8 @@ export async function albumCommand(
       if (!['draft', 'selecting'].includes(album.status))
         throw new WorkflowProblem(409, 'Danh sách đã chốt.');
       album.title = text(b.title || album.title, 160);
-      album.folders = b.folders;
+      if (resolvedFolders) album.folders = resolvedFolders;
+      if (b.limit !== undefined) album.limit = integer(b.limit, 0, 10000);
       await Photo.updateMany(
         { album: album._id, deliveryVersion: 0 },
         { $set: { available: false } },
@@ -197,6 +269,31 @@ export async function albumCommand(
             },
           );
       }
+    } else if (operation === 'delivery-sync') {
+      await Photo.updateMany(
+        { album: album._id, deliveryVersion: -1 },
+        { $set: { available: false } },
+        { session },
+      );
+      for (const [index, image] of source!.images.entries()) {
+        const previous = await Photo.findOne({
+          album: album._id,
+          deliveryVersion: -1,
+          'drive.id': image.id,
+        }).session(session);
+        if (previous) {
+          previous.drive = image;
+          previous.available = true;
+          previous.order = index;
+          await previous.save({ session });
+        } else
+          await Photo.create(
+            [{ album: album._id, deliveryVersion: -1, drive: image, order: index }],
+            { session },
+          );
+      }
+    } else if (operation === 'cover') {
+      album.coverId = text(b.coverId, 200);
     } else if (operation === 'publish') {
       if (!albumOpen(order) || album.status !== 'draft')
         throw new WorkflowProblem(409, 'Cần đủ tiền hợp đồng trước khi mở chọn.');
@@ -280,12 +377,12 @@ export async function albumCommand(
         album.markModified('paidRequests');
         album.status = 'revising';
         order.status = 'shot';
+      } else if (b.revision === true && album.status === 'delivered') {
+        album.status = 'revising';
       } else if (album.status === 'queued') album.status = 'retouching';
       else if (album.status !== 'revising')
         throw new WorkflowProblem(409, 'Chưa đủ điều kiện bắt đầu retouch.');
     } else if (operation === 'deliver') {
-      if (!['retouching', 'revising'].includes(album.status))
-        throw new WorkflowProblem(409, 'Chỉ giao khi đang retouch.');
       if (order.refundDue > 0)
         throw new WorkflowProblem(409, 'Đối soát khoản cần hoàn trước khi bàn giao.');
       const pendingFeedback = album.feedbackRounds.find(
@@ -299,38 +396,104 @@ export async function albumCommand(
         )
       )
         throw new WorkflowProblem(409, 'Xử lý tất cả góp ý có phí trước khi giao.');
-      const latest = album.selections[album.selections.length - 1];
-      const stem = (name: string) => name.replace(/\.[^.]+$/, '').toLowerCase();
-      if (
-        !latest ||
-        source!.images.length !== latest.photos.length ||
-        latest.photos.some(
-          (p: any) => !source!.images.some((i) => stem(i.name) === stem(p.name)),
-        ) ||
-        new Set(source!.images.map((i) => stem(i.name))).size !== source!.images.length
-      )
-        throw new WorkflowProblem(
-          409,
-          'Ảnh retouch cần đủ danh sách đã chốt và giữ tên file gốc (có thể đổi đuôi).',
-        );
-      album.deliveryVersion += 1;
-      for (const [index, image] of source!.images.entries())
-        await Photo.create(
-          [
-            {
-              album: album._id,
-              deliveryVersion: album.deliveryVersion,
-              drive: image,
-              order: index,
-            },
-          ],
+      if (Array.isArray(b.deliveryPhotoIds)) {
+        if (album.status === 'awaiting_extra')
+          throw new WorkflowProblem(409, 'Chờ thanh toán phí ảnh thêm trước khi bàn giao.');
+        await validateConceptDeliveryPhotos(b.deliveryPhotoIds, order._id, session);
+        album.deliveryVersion += 1;
+        await DeliveryPhoto.updateMany(
+          { _id: { $in: b.deliveryPhotoIds }, order: order._id },
+          { $addToSet: { publishedVersions: album.deliveryVersion } },
           { session },
         );
-      album.deliveries.push({
-        version: album.deliveryVersion,
-        at: new Date(),
-        actor: String(actor._id),
-      });
+        album.deliveries.push({
+          version: album.deliveryVersion,
+          at: new Date(),
+          actor: String(actor._id),
+          source: 'local',
+        });
+      } else if (b.driveAlbum === true) {
+        if (album.status === 'awaiting_extra')
+          throw new WorkflowProblem(409, 'Chờ thanh toán phí ảnh thêm trước khi bàn giao.');
+        const draft = await Photo.find({ album: album._id, deliveryVersion: -1, available: true })
+          .sort({ order: 1 })
+          .session(session);
+        if (!draft.length || draft.length > 500)
+          throw new WorkflowProblem(
+            400,
+            'Chọn thư mục có từ 1 đến 500 ảnh đã chỉnh trước khi bàn giao.',
+          );
+        const latest = album.selections[album.selections.length - 1];
+        if (latest) {
+          const stem = (name: string) => name.replace(/\.[^.]+$/, '').toLowerCase();
+          if (
+            draft.length !== latest.photos.length ||
+            latest.photos.some(
+              (p: any) => !draft.some((i) => stem(i.drive.name) === stem(p.name)),
+            ) ||
+            new Set(draft.map((i) => stem(i.drive.name))).size !== draft.length
+          )
+            throw new WorkflowProblem(
+              409,
+              'Ảnh retouch cần đủ danh sách đã chốt và giữ tên file gốc (có thể đổi đuôi).',
+            );
+        }
+        album.deliveryVersion += 1;
+        for (const [index, staged] of draft.entries())
+          await Photo.create(
+            [
+              {
+                album: album._id,
+                deliveryVersion: album.deliveryVersion,
+                drive: staged.drive,
+                order: index,
+              },
+            ],
+            { session },
+          );
+        album.deliveries.push({
+          version: album.deliveryVersion,
+          at: new Date(),
+          actor: String(actor._id),
+          source: 'drive',
+        });
+      } else {
+        if (!['retouching', 'revising'].includes(album.status))
+          throw new WorkflowProblem(409, 'Chỉ giao khi đang retouch.');
+        const latest = album.selections[album.selections.length - 1];
+        const stem = (name: string) => name.replace(/\.[^.]+$/, '').toLowerCase();
+        if (
+          !latest ||
+          source!.images.length !== latest.photos.length ||
+          latest.photos.some(
+            (p: any) => !source!.images.some((i) => stem(i.name) === stem(p.name)),
+          ) ||
+          new Set(source!.images.map((i) => stem(i.name))).size !== source!.images.length
+        )
+          throw new WorkflowProblem(
+            409,
+            'Ảnh retouch cần đủ danh sách đã chốt và giữ tên file gốc (có thể đổi đuôi).',
+          );
+        album.deliveryVersion += 1;
+        for (const [index, image] of source!.images.entries())
+          await Photo.create(
+            [
+              {
+                album: album._id,
+                deliveryVersion: album.deliveryVersion,
+                drive: image,
+                order: index,
+              },
+            ],
+            { session },
+          );
+        album.deliveries.push({
+          version: album.deliveryVersion,
+          at: new Date(),
+          actor: String(actor._id),
+          source: 'drive',
+        });
+      }
       album.paidRequests.forEach((p: any) => {
         if (p.status === 'processing') p.status = 'resolved';
       });
@@ -347,15 +510,28 @@ export async function albumCommand(
       const seen = new Set<string>();
       const items = [];
       for (const item of b.items) {
+        if (!item.photoId || item.photoId === 'general') {
+          if (seen.has('general'))
+            throw new WorkflowProblem(400, 'Mỗi lượt gửi chỉ chứa một phản hồi chung.');
+          seen.add('general');
+          items.push({ photoId: 'general', note: text(item.note, 2000), resolved: false });
+          continue;
+        }
         const photoId = objectId(item.photoId);
-        if (
-          seen.has(photoId) ||
-          !(await Photo.exists({
+        const validDrive = await Photo.exists({
+          _id: photoId,
+          album: album._id,
+          deliveryVersion: album.deliveryVersion,
+        }).session(session);
+        const validLocal =
+          !validDrive &&
+          (await DeliveryPhoto.exists({
             _id: photoId,
-            album: album._id,
-            deliveryVersion: album.deliveryVersion,
-          }).session(session))
-        )
+            order: order._id,
+            publishedVersions: album.deliveryVersion,
+            deletedAt: { $exists: false },
+          }).session(session));
+        if (seen.has(photoId) || (!validDrive && !validLocal))
           throw new WorkflowProblem(400, 'Ảnh góp ý không đúng phiên bản hoặc bị trùng.');
         seen.add(photoId);
         items.push({ photoId, note: text(item.note, 2000), resolved: false });
@@ -466,6 +642,8 @@ export async function albumCommand(
       (
         {
           sync: 'Đã đồng bộ ảnh chỉnh màu.',
+          'delivery-sync': 'Đã lấy ảnh chỉnh sửa từ Drive.',
+          cover: 'Đã cập nhật ảnh bìa album.',
           publish: 'Đã mở album chọn ảnh.',
           photo: 'Đã lưu lựa chọn và ghi chú ảnh.',
           finalize: 'Đã chốt ảnh retouch.',
@@ -499,9 +677,20 @@ export async function photoFor(
 ) {
   if (download && (guest || !access.album.allowDownload))
     throw new WorkflowProblem(403, 'Không được tải ảnh.');
-  const photo = await Photo.findOne({ _id: objectId(photoId), album: access.album._id });
-  if (!photo || !photo.available || (download && photo.deliveryVersion === 0))
-    throw new WorkflowProblem(404, 'Không tìm thấy ảnh bàn giao.');
-  return photo;
+  const validId = objectId(photoId);
+  const drivePhoto = await Photo.findOne({ _id: validId, album: access.album._id });
+  if (drivePhoto) {
+    if (!drivePhoto.available || (download && drivePhoto.deliveryVersion === 0))
+      throw new WorkflowProblem(404, 'Không tìm thấy ảnh bàn giao.');
+    return { kind: 'drive' as const, photo: drivePhoto };
+  }
+  const localPhoto = await DeliveryPhoto.findOne({
+    _id: validId,
+    order: access.album.order,
+    deletedAt: { $exists: false },
+    ...(!access.staff || guest ? { 'publishedVersions.0': { $exists: true } } : {}),
+  });
+  if (!localPhoto) throw new WorkflowProblem(404, 'Không tìm thấy ảnh bàn giao.');
+  return { kind: 'local' as const, photo: localPhoto };
 }
 export { readAlbumPhoto as readConceptPhoto };

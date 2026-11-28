@@ -7,6 +7,7 @@ const router = Router();
 
 // Available to any logged-in user (for assignment dropdowns)
 router.get('/photographers', protect, requireRole(0, 1, 3), c.getPhotographers);
+router.get('/photographers/manage', protect, requireRole(0, 1), c.getPhotographersManage);
 router.get('/coordinators', protect, requireRole(0, 1), c.getCoordinators);
 
 // All other user management routes require superadmin

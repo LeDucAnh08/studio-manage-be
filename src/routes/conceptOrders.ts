@@ -1,10 +1,14 @@
+import { readFile } from 'node:fs/promises';
 import { Router } from 'express';
 import Order from '../models/ConceptOrder';
 import Photo from '../models/ConceptPhoto';
+import DeliveryPhoto from '../models/ConceptDeliveryPhoto';
 import User from '../models/User';
 import { protect } from '../middleware/auth';
 import { sendResponse } from '../utils/response';
 import { conceptHandler } from './concepts';
+import conceptDeliveryRoutes from './conceptDelivery';
+import { deliveryFile, sendDeliveryPhoto } from '../services/bookingDelivery';
 import {
   accessOrder,
   admin,
@@ -25,8 +29,12 @@ import { commandKey, conceptOrderStatuses, integer } from '../services/conceptPo
 import { WorkflowProblem } from '../services/workflowTransactions';
 import { activeConceptHoldFilter } from '../services/conceptHolds';
 import { createRateLimit } from '../middleware/authRateLimit';
-import { backgroundJobsEnabled } from '../config/queue';
-import { submitAlbumOperation, operationDto } from '../services/backgroundOperations';
+import {
+  submitAlbumOperation,
+  operationDto,
+  shouldQueueAlbumSync,
+  resolvePendingAlbumOperations,
+} from '../services/backgroundOperations';
 
 const router = Router();
 router.use(protect);
@@ -116,6 +124,7 @@ router.get(
     );
   }),
 );
+router.use('/:id/delivery', conceptDeliveryRoutes);
 router.get(
   '/:id',
   conceptHandler(async (req, res) => {
@@ -146,7 +155,7 @@ router.get(
 router.post(
   '/:id/album/:operation',
   conceptHandler(async (req, res) => {
-    if (backgroundJobsEnabled() && req.params.operation === 'sync') {
+    if (req.params.operation === 'sync' && (await shouldQueueAlbumSync())) {
       const job = await submitAlbumOperation(
         'concept',
         req.params.id,
@@ -167,6 +176,9 @@ router.post(
       req.body,
       req.get('Idempotency-Key') || '',
     );
+    if (['sync', 'delivery-sync'].includes(req.params.operation)) {
+      await resolvePendingAlbumOperations('concept', req.params.id);
+    }
     const order = await accessOrder(req.params.id, req.user);
     sendResponse(res, 200, true, 'Đã lưu album.', {
       ...(await albumDto(
@@ -182,10 +194,17 @@ router.get(
   '/:id/album/photos/:photoId',
   conceptHandler(async (req, res) => {
     const access = await albumAccess(req.params.id, req.user);
-    const photo = await photoFor(access, req.params.photoId, req.query.download === 'true');
-    const image = await readConceptPhoto(photo, req.query.size === 'thumb');
+    const found = await photoFor(access, req.params.photoId, req.query.download === 'true');
+    if (found.kind === 'local') {
+      if (req.query.download === 'true')
+        res.attachment(found.photo.name.replace(/[\r\n/\\]/g, '_'));
+      await sendDeliveryPhoto(res, String(found.photo._id), req.query.size === 'thumb');
+      return;
+    }
+    const image = await readConceptPhoto(found.photo, req.query.size === 'thumb');
     res.set('Cache-Control', 'no-store');
-    if (req.query.download === 'true') res.attachment(photo.drive.name.replace(/[\r\n/\\]/g, '_'));
+    if (req.query.download === 'true')
+      res.attachment(found.photo.drive.name.replace(/[\r\n/\\]/g, '_'));
     res.type(image.type).send(image.bytes);
   }),
 );
@@ -197,14 +216,20 @@ router.get(
     const version = req.query.version
       ? integer(Number(req.query.version), 1, access.album.deliveryVersion)
       : access.album.deliveryVersion;
-    const photos = await Photo.find({
-      album: access.album._id,
-      deliveryVersion: version,
-      available: true,
-    }).sort({
-      order: 1,
-    });
-    if (!photos.length) throw new WorkflowProblem(404, 'Chưa có ảnh bàn giao.');
+    const [drivePhotos, localPhotos] = await Promise.all([
+      Photo.find({
+        album: access.album._id,
+        deliveryVersion: version,
+        available: true,
+      }).sort({ order: 1 }),
+      DeliveryPhoto.find({
+        order: access.album.order,
+        publishedVersions: version,
+        deletedAt: { $exists: false },
+      }).sort({ createdAt: 1, _id: 1 }),
+    ]);
+    if (!drivePhotos.length && !localPhotos.length)
+      throw new WorkflowProblem(404, 'Chưa có ảnh bàn giao.');
     // archiver is also used by the installed Excel tooling; stream one verified image at a time.
     const archive = require('archiver')('zip', { store: true });
     res.attachment(`concept-v${version}.zip`);
@@ -215,12 +240,19 @@ router.get(
     });
     archive.pipe(res);
     try {
-      for (const [index, photo] of photos.entries()) {
+      const entries = [
+        ...drivePhotos.map((photo) => ({ kind: 'drive' as const, photo, name: photo.drive.name })),
+        ...localPhotos.map((photo) => ({ kind: 'local' as const, photo, name: photo.name })),
+      ];
+      for (const [index, entry] of entries.entries()) {
         if (res.destroyed) break;
         // Recheck permission between files; revoked access cannot continue a long export.
         if (!(await albumAccess(req.params.id, req.user)).album.allowDownload)
           throw new WorkflowProblem(403, 'Đã thu hồi quyền tải.');
-        const image = await readConceptPhoto(photo, false);
+        const bytes =
+          entry.kind === 'local'
+            ? await readFile(deliveryFile(String(entry.photo._id)))
+            : (await readConceptPhoto(entry.photo, false)).bytes;
         // Wait for this entry to drain before fetching another image.
         await new Promise<void>((resolve, reject) => {
           const clean = () => {
@@ -240,8 +272,8 @@ router.get(
           archive.once('entry', done);
           archive.once('error', fail);
           res.once('close', closed);
-          archive.append(image.bytes, {
-            name: `${index + 1}-${photo.drive.name.replace(/[\r\n/\\]/g, '_')}`,
+          archive.append(bytes, {
+            name: `${index + 1}-${entry.name.replace(/[\r\n/\\]/g, '_')}`,
           });
         });
       }
@@ -282,8 +314,12 @@ publicConceptAlbums.get(
     const access = await guestAccess(req.params.publicId, req.get('X-Album-Token'));
     if (req.query.download !== undefined)
       throw new WorkflowProblem(403, 'Link chia sẻ chỉ cho xem.');
-    const photo = await photoFor(access, req.params.photoId, false, true);
-    const image = await readConceptPhoto(photo, req.query.size === 'thumb');
+    const found = await photoFor(access, req.params.photoId, false, true);
+    if (found.kind === 'local') {
+      await sendDeliveryPhoto(res, String(found.photo._id), req.query.size === 'thumb');
+      return;
+    }
+    const image = await readConceptPhoto(found.photo, req.query.size === 'thumb');
     res.set('Cache-Control', 'no-store');
     res.type(image.type).send(image.bytes);
   }),

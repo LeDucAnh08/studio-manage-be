@@ -13,9 +13,14 @@ interface TransactionQuery {
   createdBy?: string;
   dateFrom?: string;
   dateTo?: string;
+  search?: string;
+  refundStatus?: string;
+  sort?: string;
   page?: string;
   limit?: string;
 }
+
+const escapeRegex = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 const buildFilter = (q: TransactionQuery) => {
   const filter: Record<string, unknown> = {};
@@ -23,36 +28,124 @@ const buildFilter = (q: TransactionQuery) => {
   if (q.type) filter.type = q.type;
   if (q.categoryId) filter.categoryId = q.categoryId;
   if (q.createdBy) filter.createdBy = q.createdBy;
+  if (typeof q.search === 'string' && q.search.trim()) {
+    filter.description = { $regex: escapeRegex(q.search.trim()), $options: 'i' };
+  }
+  if (q.refundStatus === 'unrefunded') {
+    if (!q.type || q.type === 'expense') {
+      filter.type = 'expense';
+      filter.accountantRefunded = { $ne: true };
+    } else {
+      filter._id = { $in: [] };
+    }
+  } else if (q.refundStatus === 'refunded') {
+    if (!q.type || q.type === 'expense') {
+      filter.type = 'expense';
+      filter.accountantRefunded = true;
+    } else {
+      filter._id = { $in: [] };
+    }
+  }
   if (q.dateFrom || q.dateTo) {
     const dateRange: Record<string, Date> = {};
     if (q.dateFrom) dateRange.$gte = new Date(q.dateFrom);
-    if (q.dateTo) dateRange.$lte = new Date(q.dateTo);
+    if (q.dateTo) {
+      const end = new Date(q.dateTo);
+      if (/^\d{4}-\d{2}-\d{2}$/.test(q.dateTo)) {
+        end.setUTCHours(23, 59, 59, 999);
+      }
+      dateRange.$lte = end;
+    }
     filter.date = dateRange;
   }
   return filter;
 };
 
 export const getAll = async (req: Request, res: Response): Promise<void> => {
-  const { page = '1', limit = '20', ...rest } = req.query as TransactionQuery;
+  const { page = '1', limit = '20', sort = 'date_desc', ...rest } = req.query as TransactionQuery;
   const filter = buildFilter(rest);
   if (!isPrivileged(req.user!.roles)) {
     filter.createdBy = req.user!._id;
   }
-  const skip = (Number(page) - 1) * Number(limit);
+  const pageNum = Math.max(1, Number(page) || 1);
+  const limitNum = Math.min(5000, Math.max(1, Number(limit) || 20));
+  const skip = (pageNum - 1) * limitNum;
+  const sortOrder: Record<string, 1 | -1> =
+    sort === 'date_asc' ? { date: 1, _id: 1 } : { date: -1, _id: -1 };
   const CUSTOMER_FIELDS =
     '_id className school contactName contactPhone contactAddress total totalMale totalFemale notes createdAt';
-  const [data, total] = await Promise.all([
+  const [data, total, summaryAgg] = await Promise.all([
     Transaction.find(filter)
       .populate('customer', CUSTOMER_FIELDS)
       .populate('categoryId')
       .populate('createdBy', USER_FIELDS)
-      .sort({ date: -1 })
+      .sort(sortOrder)
       .skip(skip)
-      .limit(Number(limit))
+      .limit(limitNum)
       .lean<TransactionResponse[]>(),
     Transaction.countDocuments(filter),
+    Transaction.aggregate<{
+      _id: null;
+      income: number;
+      incomeCount: number;
+      expense: number;
+      expenseCount: number;
+      unrefundedAmount: number;
+      unrefundedCount: number;
+    }>([
+      { $match: filter },
+      {
+        $group: {
+          _id: null,
+          income: { $sum: { $cond: [{ $eq: ['$type', 'income'] }, '$amount', 0] } },
+          incomeCount: { $sum: { $cond: [{ $eq: ['$type', 'income'] }, 1, 0] } },
+          expense: { $sum: { $cond: [{ $eq: ['$type', 'expense'] }, '$amount', 0] } },
+          expenseCount: { $sum: { $cond: [{ $eq: ['$type', 'expense'] }, 1, 0] } },
+          unrefundedAmount: {
+            $sum: {
+              $cond: [
+                {
+                  $and: [
+                    { $eq: ['$type', 'expense'] },
+                    { $ne: ['$accountantRefunded', true] },
+                  ],
+                },
+                '$amount',
+                0,
+              ],
+            },
+          },
+          unrefundedCount: {
+            $sum: {
+              $cond: [
+                {
+                  $and: [
+                    { $eq: ['$type', 'expense'] },
+                    { $ne: ['$accountantRefunded', true] },
+                  ],
+                },
+                1,
+                0,
+              ],
+            },
+          },
+        },
+      },
+    ]),
   ]);
-  sendResponse(res, 200, true, 'OK', data, { total, page: Number(page), limit: Number(limit) });
+  const agg = summaryAgg[0];
+  const income = agg?.income ?? 0;
+  const expense = agg?.expense ?? 0;
+  const totals = {
+    income,
+    incomeCount: agg?.incomeCount ?? 0,
+    expense,
+    expenseCount: agg?.expenseCount ?? 0,
+    profit: income - expense,
+    unrefundedAmount: agg?.unrefundedAmount ?? 0,
+    unrefundedCount: agg?.unrefundedCount ?? 0,
+  };
+  sendResponse(res, 200, true, 'OK', data, { total, page: pageNum, limit: limitNum, totals });
 };
 
 export const getOne = async (req: Request, res: Response): Promise<void> => {

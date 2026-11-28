@@ -22,6 +22,7 @@ import {
 
 interface ScheduleQuery {
   customer?: string;
+  photographer?: string;
   status?: string;
   dateFrom?: string;
   dateTo?: string;
@@ -29,10 +30,13 @@ interface ScheduleQuery {
   limit?: string;
 }
 
-const buildFilter = (q: ScheduleQuery) => {
+const buildFilter = (q: ScheduleQuery, isAdmin = false) => {
   const filter: Record<string, unknown> = {};
   if (q.customer) filter.customer = q.customer;
   if (q.status) filter.status = q.status;
+  if (isAdmin && q.photographer && Types.ObjectId.isValid(q.photographer)) {
+    filter.$or = [{ leadPhotographer: q.photographer }, { supportPhotographers: q.photographer }];
+  }
   if (q.dateFrom || q.dateTo) {
     const dateRange: Record<string, Date> = {};
     if (q.dateFrom) dateRange.$gte = new Date(q.dateFrom);
@@ -240,63 +244,112 @@ const photographerReadScope = (req: Request): Record<string, unknown> =>
     ? { $or: [{ leadPhotographer: req.user!._id }, { supportPhotographers: req.user!._id }] }
     : {};
 
-/** Personal calendar is always scoped to the caller, including multi-role users. */
-export const getMyCalendar = async (req: Request, res: Response): Promise<void> => {
-  const { from, to } = req.query;
+const parseCalendarRange = (
+  from: unknown,
+  to: unknown,
+): { ok: false; error: string } | { ok: true; start: Date; end: Date } => {
   const validDay = (value: unknown): value is string => {
     if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
     const date = new Date(`${value}T00:00:00Z`);
     return Number.isFinite(+date) && date.toISOString().slice(0, 10) === value;
   };
   if (!validDay(from) || !validDay(to)) {
-    sendResponse(res, 400, false, 'Ngày bắt đầu và kết thúc lịch không hợp lệ.');
-    return;
+    return { ok: false, error: 'Ngày bắt đầu và kết thúc lịch không hợp lệ.' };
   }
   const start = new Date(`${from}T00:00:00+07:00`);
   const end = new Date(`${to}T00:00:00+07:00`);
   const days = (+end - +start) / 86400000 + 1;
   if (days < 1 || days > 42) {
-    sendResponse(res, 400, false, 'Lịch cá nhân chỉ tải tối đa 42 ngày mỗi lần.');
-    return;
+    return { ok: false, error: 'Lịch cá nhân chỉ tải tối đa 42 ngày mỗi lần.' };
   }
+  return { ok: true, start, end };
+};
+
+const loadPhotographerCalendarEvents = async (
+  photographerId: Types.ObjectId | string,
+  start: Date,
+  end: Date,
+  includeOrderLinks = false,
+) => {
   const rows = await Schedule.find({
-    $or: [{ leadPhotographer: req.user!._id }, { supportPhotographers: req.user!._id }],
+    $or: [{ leadPhotographer: photographerId }, { supportPhotographers: photographerId }],
     shootDate: { $gte: start, $lt: new Date(+end + 86400000) },
   })
     .select(
-      '_id customer package conceptOrder conceptTitle shootDate startTime endTime location status notes leadPhotographer',
+      '_id customer package workflowBooking conceptOrder conceptTitle shootDate startTime endTime location status notes leadPhotographer',
     )
     .populate('customer', 'className school')
     .populate('package', 'name')
     .sort({ shootDate: 1, startTime: 1, _id: 1 })
     .lean();
-  sendResponse(
-    res,
-    200,
+
+  return rows.map((row) => ({
+    _id: String(row._id),
+    shootDate: row.shootDate,
+    startTime: row.startTime,
+    endTime: row.endTime,
+    location: row.location || '',
+    status: row.status,
+    notes: row.notes || '',
+    service: row.conceptOrder ? 'concept' : 'yearbook',
+    title: row.conceptOrder
+      ? row.conceptTitle || 'Chụp concept'
+      : (row.customer as unknown as { className?: string } | null)?.className ||
+        (row.package as unknown as { name?: string } | null)?.name ||
+        'Chụp kỉ yếu',
+    role: String(row.leadPhotographer) === String(photographerId) ? 'lead' : 'support',
+    ...(includeOrderLinks
+      ? {
+          workflowBooking: row.workflowBooking ? String(row.workflowBooking) : undefined,
+          conceptOrder: row.conceptOrder ? String(row.conceptOrder) : undefined,
+        }
+      : {}),
+  }));
+};
+
+/** Personal calendar is always scoped to the caller, including multi-role users. */
+export const getMyCalendar = async (req: Request, res: Response): Promise<void> => {
+  const range = parseCalendarRange(req.query.from, req.query.to);
+  if (!range.ok) {
+    sendResponse(res, 400, false, range.error);
+    return;
+  }
+  const events = await loadPhotographerCalendarEvents(req.user!._id, range.start, range.end, false);
+  sendResponse(res, 200, true, 'OK', events);
+};
+
+/** Admin view of any photographer's monthly calendar (roles 0/1). */
+export const getPhotographerCalendar = async (req: Request, res: Response): Promise<void> => {
+  const { photographerId } = req.params;
+  if (!Types.ObjectId.isValid(photographerId)) {
+    sendResponse(res, 404, false, 'Không tìm thấy thợ chụp.');
+    return;
+  }
+  const photographer = await User.findById(photographerId)
+    .select('_id roles')
+    .lean<{ _id: Types.ObjectId; roles: number[] } | null>();
+  if (!photographer || !photographer.roles?.includes(3)) {
+    sendResponse(res, 404, false, 'Không tìm thấy thợ chụp.');
+    return;
+  }
+  const range = parseCalendarRange(req.query.from, req.query.to);
+  if (!range.ok) {
+    sendResponse(res, 400, false, range.error);
+    return;
+  }
+  const events = await loadPhotographerCalendarEvents(
+    photographer._id,
+    range.start,
+    range.end,
     true,
-    'OK',
-    rows.map((row) => ({
-      _id: String(row._id),
-      shootDate: row.shootDate,
-      startTime: row.startTime,
-      endTime: row.endTime,
-      location: row.location || '',
-      status: row.status,
-      notes: row.notes || '',
-      service: row.conceptOrder ? 'concept' : 'yearbook',
-      title: row.conceptOrder
-        ? row.conceptTitle || 'Chụp concept'
-        : (row.customer as unknown as { className?: string } | null)?.className ||
-          (row.package as unknown as { name?: string } | null)?.name ||
-          'Chụp kỉ yếu',
-      role: String(row.leadPhotographer) === String(req.user!._id) ? 'lead' : 'support',
-    })),
   );
+  sendResponse(res, 200, true, 'OK', events);
 };
 
 export const getAll = async (req: Request, res: Response): Promise<void> => {
   const { page = '1', limit = '20', ...rest } = req.query as ScheduleQuery;
-  const filter = { ...buildFilter(rest), ...photographerReadScope(req) };
+  const isAdmin = req.user!.roles.some((role) => [0, 1].includes(role));
+  const filter = { ...buildFilter(rest, isAdmin), ...photographerReadScope(req) };
   const skip = (Number(page) - 1) * Number(limit);
   const USER_FIELDS = '_id username name roles isActive createdAt';
   const CUSTOMER_FIELDS =

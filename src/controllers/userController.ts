@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { isValidObjectId } from 'mongoose';
 import User, { ACTIVE_ROLES, USER_PUBLIC_FIELDS } from '../models/User';
 import type { UserRole } from '../models/User';
+import Schedule from '../models/Schedule';
 import { sendResponse } from '../utils/response';
 import { isDuplicateKeyError, normalizeUsername, trimmedText } from '../utils/input';
 
@@ -31,6 +32,58 @@ export const getPhotographers = async (_req: Request, res: Response): Promise<vo
     .select('_id username name roles')
     .sort({ username: 1 });
   sendResponse(res, 200, true, 'OK', users);
+};
+
+export const getPhotographersManage = async (_req: Request, res: Response): Promise<void> => {
+  const shiftedNow = new Date(Date.now() + 7 * 60 * 60 * 1000);
+  const vietnamTodayStart = new Date(
+    Date.UTC(shiftedNow.getUTCFullYear(), shiftedNow.getUTCMonth(), shiftedNow.getUTCDate()) -
+      7 * 60 * 60 * 1000,
+  );
+  const [users, schedules] = await Promise.all([
+    User.find({ roles: { $in: [3] } })
+      .select(USER_PUBLIC_FIELDS)
+      .sort({ isActive: -1, name: 1, username: 1 })
+      .lean(),
+    Schedule.find({ status: { $ne: 'cancelled' } })
+      .select('leadPhotographer supportPhotographers shootDate status')
+      .lean(),
+  ]);
+
+  const statsMap = new Map<string, { total: number; upcoming: number; completed: number }>();
+  const ensureStats = (id: string) => {
+    let entry = statsMap.get(id);
+    if (!entry) {
+      entry = { total: 0, upcoming: 0, completed: 0 };
+      statsMap.set(id, entry);
+    }
+    return entry;
+  };
+
+  for (const s of schedules) {
+    const assigned = new Set<string>(
+      [s.leadPhotographer, ...(s.supportPhotographers ?? [])].filter(Boolean).map(String),
+    );
+    const isUpcoming = s.status !== 'completed' && new Date(s.shootDate) >= vietnamTodayStart;
+    const isCompleted = s.status === 'completed';
+    for (const id of assigned) {
+      const entry = ensureStats(id);
+      entry.total += 1;
+      if (isUpcoming) entry.upcoming += 1;
+      if (isCompleted) entry.completed += 1;
+    }
+  }
+
+  sendResponse(
+    res,
+    200,
+    true,
+    'OK',
+    users.map((u) => ({
+      ...u,
+      scheduleStats: statsMap.get(String(u._id)) ?? { total: 0, upcoming: 0, completed: 0 },
+    })),
+  );
 };
 
 export const getCoordinators = async (_req: Request, res: Response): Promise<void> => {

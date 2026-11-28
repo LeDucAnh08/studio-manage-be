@@ -19,6 +19,8 @@ const schema = new Schema(
       default: 'draft',
     },
     folders: { type: [String], default: [] },
+    limit: { type: Number, default: 0, min: 0, max: 10000 },
+    coverId: String,
     selectionRound: { type: Number, default: 0 },
     selections: { type: [Schema.Types.Mixed], default: [] },
     extraAmount: { type: Number, default: 0 },

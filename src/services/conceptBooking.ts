@@ -408,7 +408,12 @@ export async function checkout(actor: any, body: any, key: string) {
       return prior;
     }
     const user = await User.findById(actor._id).session(session);
-    if (!actor.roles.includes(6) || !user?.email || !user.emailVerifiedAt || !user.isActive)
+    const emailVerificationRequired = process.env.CUSTOMER_EMAIL_VERIFICATION_ENABLED === 'true';
+    if (
+      !actor.roles.includes(6) ||
+      !user?.isActive ||
+      (emailVerificationRequired && (!user.email || !user.emailVerifiedAt))
+    )
       throw new WorkflowProblem(403, 'Xác thực email trước khi đặt cọc.');
     if (
       (await Order.countDocuments({ client: actor._id, ...activeConceptHoldFilter() }).session(

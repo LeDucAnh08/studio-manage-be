@@ -1,10 +1,10 @@
 import { createHash, randomUUID } from 'crypto';
-import { ClientSession, isValidObjectId } from 'mongoose';
+import mongoose, { ClientSession, isValidObjectId } from 'mongoose';
 import Operation from '../models/BackgroundOperation';
 import User from '../models/User';
 import BookingAlbum from '../models/BookingAlbum';
 import ConceptAlbum from '../models/ConceptAlbum';
-import { queueConfig } from '../config/queue';
+import { backgroundJobsEnabled, queueConfig } from '../config/queue';
 import { assertJobRuntime } from './jobQueue';
 import { WorkflowProblem, workflowEnabled } from './workflowTransactions';
 import { staffAlbumAccess } from './bookingAlbum';
@@ -15,6 +15,36 @@ import { commandKey } from './conceptPolicy';
 import { listDriveFolders, parseDriveFolder } from './driveAlbumSource';
 
 export type AlbumService = 'yearbook' | 'concept';
+export async function shouldQueueAlbumSync() {
+  if (!backgroundJobsEnabled()) return false;
+  if (process.env.NODE_ENV === 'test') return true;
+  const config = queueConfig();
+  if (config.mode !== 'bullmq') return false;
+  const runtime = await mongoose.connection
+    .collection('backgroundjobruntime')
+    .findOne({ _id: 'runtime' as any });
+  return Boolean(
+    runtime?.mode === 'bullmq' &&
+      runtime?.prefix === config.prefix &&
+      runtime?.workerSeenAt &&
+      Date.now() - new Date(runtime.workerSeenAt).getTime() < 30_000,
+  );
+}
+export async function resolvePendingAlbumOperations(service: AlbumService, id: string) {
+  if (!isValidObjectId(id)) return;
+  await Operation.updateMany(
+    { service, order: id, status: { $in: ['pending', 'running'] } },
+    {
+      $set: {
+        status: 'succeeded',
+        active: false,
+        message: 'Đã đồng bộ ảnh.',
+        completedAt: new Date(),
+      },
+      $unset: { leaseToken: 1, lockedUntil: 1 },
+    },
+  );
+}
 export const operationDto = (row: any) => ({
   id: String(row._id),
   service: row.service,
@@ -165,12 +195,17 @@ export async function executeAlbumOperation(id: string) {
     const actor: any = await User.findOne({ _id: row.actor, isActive: true });
     await albumOperationAccess(row.service, String(row.order), actor);
     let folders = row.payload.folders;
-    if (row.service === 'yearbook' && row.command === 'sync') {
-      const album = await BookingAlbum.findOne({ booking: row.order });
-      folders = album?.folders.map(
-        (f) =>
-          `https://drive.google.com/drive/folders/${f.id}${f.resourceKey ? `?resourcekey=${f.resourceKey}` : ''}`,
-      );
+    if (row.command === 'sync' && (!Array.isArray(folders) || !folders.length)) {
+      if (row.service === 'yearbook') {
+        const album = await BookingAlbum.findOne({ booking: row.order });
+        folders = album?.folders.map(
+          (f) =>
+            `https://drive.google.com/drive/folders/${f.id}${f.resourceKey ? `?resourcekey=${f.resourceKey}` : ''}`,
+        );
+      } else {
+        const album = await ConceptAlbum.findOne({ order: row.order });
+        folders = album?.folders;
+      }
     }
     const source = await listDriveFolders(folders);
     const guard = async (session: ClientSession) => {

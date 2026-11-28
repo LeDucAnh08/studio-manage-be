@@ -4,7 +4,11 @@ import mongoose from 'mongoose';
 import { protect } from '../middleware/auth';
 import { asyncHandler } from '../middleware/asyncHandler';
 import Operation from '../models/BackgroundOperation';
-import { albumOperationAccess, operationDto } from '../services/backgroundOperations';
+import {
+  albumOperationAccess,
+  operationDto,
+  shouldQueueAlbumSync,
+} from '../services/backgroundOperations';
 import { queueConfig } from '../config/queue';
 import { getQueue, jobNames } from '../services/jobQueue';
 import { sendResponse } from '../utils/response';
@@ -33,7 +37,9 @@ router.get(
       id = String(req.query.orderId || '');
     await albumOperationAccess(service, id, req.user!);
     const row = await Operation.findOne({ service, order: id }).sort({ createdAt: -1, _id: -1 });
-    sendResponse(res, 200, true, 'OK', row ? operationDto(row) : null);
+    const visible =
+      row && row.status === 'pending' && !(await shouldQueueAlbumSync()) ? null : row;
+    sendResponse(res, 200, true, 'OK', visible ? operationDto(visible) : null);
   }),
 );
 router.get(

@@ -8,6 +8,7 @@ const router = Router();
 router.use(protect);
 
 router.get('/mine/calendar', requireRole(3), c.getMyCalendar);
+router.get('/photographer/:photographerId/calendar', requireRole(0, 1), c.getPhotographerCalendar);
 router.get('/', requireRole(0, 1, 3), c.getAll);
 router.post('/', requireRole(0, 1), c.create);
 router.get('/customer/:customer', requireRole(0, 1, 3), c.getByCustomer);
