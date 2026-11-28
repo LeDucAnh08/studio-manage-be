@@ -25,7 +25,6 @@ import {
   dayString,
 } from '../services/conceptBooking';
 import {
-  conceptEnabled,
   commandKey,
   digest,
   integer,
@@ -36,13 +35,6 @@ import {
 import { getRentalAvailability, loadRentalHolds } from '../services/rentalAvailability';
 import { createRateLimit } from '../middleware/authRateLimit';
 
-export const conceptGate: import('express').RequestHandler = (_req, res, next) => {
-  if (!conceptEnabled()) {
-    sendResponse(res, 404, false, 'Chưa mở đặt concept.');
-    return;
-  }
-  next();
-};
 export const conceptHandler = (fn: (req: any, res: any) => Promise<void>) =>
   asyncHandler(async (req, res) => {
     try {
@@ -53,7 +45,7 @@ export const conceptHandler = (fn: (req: any, res: any) => Promise<void>) =>
     }
   });
 const router = Router();
-router.use(conceptGate, protect);
+router.use(protect);
 router.use(createRateLimit({ limit: 120, windowMs: 60000, message: 'Thử lại sau một phút.' }));
 router.get(
   '/photographers/:id',

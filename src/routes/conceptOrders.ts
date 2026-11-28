@@ -4,7 +4,7 @@ import Photo from '../models/ConceptPhoto';
 import User from '../models/User';
 import { protect } from '../middleware/auth';
 import { sendResponse } from '../utils/response';
-import { conceptGate, conceptHandler } from './concepts';
+import { conceptHandler } from './concepts';
 import {
   accessOrder,
   admin,
@@ -29,7 +29,7 @@ import { backgroundJobsEnabled } from '../config/queue';
 import { submitAlbumOperation, operationDto } from '../services/backgroundOperations';
 
 const router = Router();
-router.use(conceptGate, protect);
+router.use(protect);
 router.use(createRateLimit({ limit: 180, windowMs: 60000, message: 'Thử lại sau một phút.' }));
 router.get(
   '/',
@@ -266,7 +266,7 @@ router.post(
   }),
 );
 export const publicConceptAlbums = Router();
-publicConceptAlbums.use(conceptGate, protect);
+publicConceptAlbums.use(protect);
 publicConceptAlbums.use(createRateLimit({ limit: 300, windowMs: 60000, message: 'Thử lại sau.' }));
 publicConceptAlbums.get(
   '/:publicId',

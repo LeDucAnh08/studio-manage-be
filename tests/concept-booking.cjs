@@ -4,7 +4,6 @@ const { test } = require('node:test');
 const { createHmac, createHash, randomUUID } = require('node:crypto');
 process.env.TS_NODE_PROJECT = path.join(__dirname, '../tsconfig.json');
 Object.assign(process.env, {
-  CONCEPT_BOOKING_ENABLED: 'true',
   CLIENT_PORTAL_ENABLED: 'true',
   CLIENT_WORKFLOW_ENABLED: 'true',
   JWT_SECRET: 'concept-test-signing-secret-long',

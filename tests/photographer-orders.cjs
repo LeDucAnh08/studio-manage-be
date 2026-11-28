@@ -1,6 +1,5 @@
 process.env.TS_NODE_PROJECT = require('node:path').join(__dirname, '../tsconfig.json');
 process.env.JWT_SECRET = 'photographer-orders-test-secret';
-process.env.CONCEPT_BOOKING_ENABLED = 'true';
 require('ts-node/register/transpile-only');
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
@@ -107,8 +106,4 @@ test('unified photographer list protects both service branches and filters/count
     '?limit=NaN',
   ])
     assert.equal((await call(photographer, query)).status, 400);
-  process.env.CONCEPT_BOOKING_ENABLED = 'false';
-  assert.equal((await call(photographer)).status, 200);
-  assert.ok(!pipeline.some((step) => step.$unionWith));
-  assert.equal((await call(photographer, '?service=concept')).status, 400);
 });

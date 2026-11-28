@@ -3,7 +3,6 @@ const assert = require('node:assert/strict');
 const { test } = require('node:test');
 process.env.TS_NODE_PROJECT = path.join(__dirname, '../tsconfig.json');
 require('dotenv').config({ path: path.join(__dirname, '../.env'), quiet: true });
-process.env.CONCEPT_BOOKING_ENABLED = 'true';
 process.env.JWT_SECRET = 'shoot-orders-test-only';
 require('ts-node/register/transpile-only');
 const mongoose = require('mongoose');
@@ -50,7 +49,7 @@ test('combined staff shoot orders preserve roles, both services, global paginati
       isActive: true,
       password: 'TestOnly123!',
     };
-    if (roles.some(role => [2, 4, 5].includes(role))) {
+    if (roles.some((role) => [2, 4, 5].includes(role))) {
       actors[name] = new User(input);
       await User.collection.insertOne(actors[name].toObject());
     } else actors[name] = await User.create(input);
@@ -178,17 +177,18 @@ test('combined staff shoot orders preserve roles, both services, global paginati
       }
       const combinedRoles = await call('salesPhoto');
       assert.equal(combinedRoles.body.pagination.total, 2);
-      assert.ok(combinedRoles.body.data.every(row => row.payment === undefined && row.conceptNetReceived === undefined));
-      assert.equal(
-        (await call('manager', '?service=concept')).body.data[0].conceptNetReceived,
-        0,
+      assert.ok(
+        combinedRoles.body.data.every(
+          (row) => row.payment === undefined && row.conceptNetReceived === undefined,
+        ),
       );
+      assert.equal((await call('manager', '?service=concept')).body.data[0].conceptNetReceived, 0);
       assert.equal((await call('client')).status, 403);
       assert.equal((await call('other')).status, 401);
       assert.equal((await call(null)).status, 401);
     },
   );
-  await t.test('validates filters and respects the concept feature gate', async () => {
+  await t.test('validates filters and rejects retired roles', async () => {
     for (const query of [
       '?service=rental',
       '?service[]=concept',
@@ -197,14 +197,7 @@ test('combined staff shoot orders preserve roles, both services, global paginati
       '?limit=51',
     ])
       assert.equal((await call('admin', query)).status, 400);
-    process.env.CONCEPT_BOOKING_ENABLED = 'false';
-    try {
-      assert.equal((await call('admin')).body.pagination.total, 26);
-      assert.equal((await call('admin', '?service=concept')).status, 400);
-      assert.equal((await call('sale')).status, 401);
-      assert.equal((await call('accountant')).status, 401);
-    } finally {
-      process.env.CONCEPT_BOOKING_ENABLED = 'true';
-    }
+    assert.equal((await call('sale')).status, 401);
+    assert.equal((await call('accountant')).status, 401);
   });
 });

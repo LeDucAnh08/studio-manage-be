@@ -31,7 +31,6 @@ Object.assign(process.env, {
   SEPAY_ENABLED: 'false',
   CLIENT_PORTAL_ENABLED: 'true',
   CLIENT_WORKFLOW_ENABLED: 'true',
-  CONCEPT_BOOKING_ENABLED: 'true',
   GOOGLE_DRIVE_API_KEY: 'fake-drive-key',
 });
 require('ts-node/register/transpile-only');

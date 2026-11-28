@@ -5,7 +5,6 @@ const assert = require('node:assert/strict');
 const { test } = require('node:test');
 process.env.TS_NODE_PROJECT = path.join(__dirname, '../tsconfig.json');
 require('dotenv').config({ path: path.join(__dirname, '../.env'), quiet: true });
-process.env.CONCEPT_BOOKING_ENABLED = 'true';
 process.env.JWT_SECRET = 'portfolio-integration-only';
 require('ts-node/register/transpile-only');
 const mongoose = require('mongoose');
@@ -92,18 +91,9 @@ test('personal portfolio drafts, public snapshots, uploads, ownership and versio
     );
     return { status: res.status, body: await res.json() };
   };
-  await t.test(
-    'portfolio feature gate does not intercept existing photographer availability routes',
-    async () => {
-      process.env.CONCEPT_BOOKING_ENABLED = 'false';
-      try {
-        assert.equal((await get('/api/photographers/me/portfolio', a)).status, 404);
-        assert.equal((await get('/api/photographers/availability', client)).status, 403);
-      } finally {
-        process.env.CONCEPT_BOOKING_ENABLED = 'true';
-      }
-    },
-  );
+  await t.test('portfolio routes preserve photographer availability permissions', async () => {
+    assert.equal((await get('/api/photographers/availability', client)).status, 403);
+  });
   let state;
   await t.test(
     'existing data and blank profiles are read without creating duplicates; role checks',

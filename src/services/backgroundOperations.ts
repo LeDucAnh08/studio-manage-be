@@ -11,7 +11,7 @@ import { staffAlbumAccess } from './bookingAlbum';
 import { executeBookingAlbumCommand } from './bookingAlbumCommand';
 import { accessOrder, admin, assigned } from './conceptBooking';
 import { albumCommand } from './conceptAlbum';
-import { commandKey, conceptEnabled } from './conceptPolicy';
+import { commandKey } from './conceptPolicy';
 import { listDriveFolders, parseDriveFolder } from './driveAlbumSource';
 
 export type AlbumService = 'yearbook' | 'concept';
@@ -42,7 +42,6 @@ export async function albumOperationAccess(
     if (!workflowEnabled()) throw new WorkflowProblem(404, 'Chức năng chưa được bật.');
     await staffAlbumAccess(id, actor, session);
   } else {
-    if (!conceptEnabled()) throw new WorkflowProblem(404, 'Chức năng chưa được bật.');
     const order = await accessOrder(id, actor, session);
     if (!admin(actor) && !assigned(order, actor))
       throw new WorkflowProblem(404, 'Không tìm thấy tác vụ đồng bộ.');

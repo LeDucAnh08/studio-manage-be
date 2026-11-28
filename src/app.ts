@@ -28,7 +28,6 @@ import paymentRoutes from './routes/payments';
 import conceptRoutes from './routes/concepts';
 import conceptOrderRoutes, { publicConceptAlbums } from './routes/conceptOrders';
 import { expireConceptOrders } from './services/conceptBooking';
-import { conceptEnabled } from './services/conceptPolicy';
 import Concept from './models/Concept';
 import ConceptDetail from './models/ConceptDetail';
 import PhotographerProfile from './models/PhotographerProfile';
@@ -130,32 +129,30 @@ connectDB().then(async () => {
   await BookingAlbum.init();
   await BookingAlbumPhoto.init();
   await BookingAlbumSelection.init();
-  if (conceptEnabled()) {
-    for (const model of [
-      Concept,
-      ConceptDetail,
-      PhotographerProfile,
-      ConceptOrder,
-      ConceptAlbum,
-      ConceptPhoto,
-    ])
-      await model.init();
-    let expiring = false;
-    const tick = async () => {
-      if (expiring) return;
-      expiring = true;
-      try {
-        await expireConceptOrders();
-      } catch (e) {
-        console.error('[Concept expiry]', (e as Error).message);
-      } finally {
-        expiring = false;
-      }
-    };
-    void tick();
-    const timer = setInterval(() => void tick(), 60000);
-    timer.unref();
-  }
+  for (const model of [
+    Concept,
+    ConceptDetail,
+    PhotographerProfile,
+    ConceptOrder,
+    ConceptAlbum,
+    ConceptPhoto,
+  ])
+    await model.init();
+  let expiring = false;
+  const tick = async () => {
+    if (expiring) return;
+    expiring = true;
+    try {
+      await expireConceptOrders();
+    } catch (e) {
+      console.error('[Concept expiry]', (e as Error).message);
+    } finally {
+      expiring = false;
+    }
+  };
+  void tick();
+  const timer = setInterval(() => void tick(), 60000);
+  timer.unref();
   startBookingExpiry();
   startEmailWorker();
   const host =

@@ -1,7 +1,6 @@
 // Real JWT middleware and HTTP routers with model doubles; no MongoDB connection.
 process.env.TS_NODE_PROJECT = require('path').join(__dirname, '../tsconfig.json');
 process.env.JWT_SECRET = 'isolated-customer-session-secret';
-process.env.CONCEPT_BOOKING_ENABLED = 'true';
 process.env.CLIENT_PORTAL_ENABLED = 'true';
 require('ts-node/register/transpile-only');
 const { test } = require('node:test');

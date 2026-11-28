@@ -10,7 +10,6 @@ import {
   DashboardOrder,
   DashboardPeriod,
 } from '../services/photographerDashboard';
-import { conceptEnabled } from '../services/conceptPolicy';
 import { WorkflowProblem } from '../services/workflowTransactions';
 import { sendResponse } from '../utils/response';
 
@@ -18,11 +17,7 @@ export async function getPhotographerStats(req: Request, res: Response) {
   const { period = 'month', service = '', metric, group = '0', page = '1' } = req.query;
   if (typeof period !== 'string' || !['month', 'previous', 'quarter', 'year'].includes(period))
     throw new WorkflowProblem(400, 'Kỳ thống kê không hợp lệ.');
-  if (
-    typeof service !== 'string' ||
-    !['', 'concept', 'yearbook'].includes(service) ||
-    (service === 'concept' && !conceptEnabled())
-  )
+  if (typeof service !== 'string' || !['', 'concept', 'yearbook'].includes(service))
     throw new WorkflowProblem(400, 'Loại dịch vụ không hợp lệ.');
   if (
     metric !== undefined &&

@@ -6,7 +6,6 @@ import Schedule from '../models/Schedule';
 import ConceptOrder from '../models/ConceptOrder';
 import User from '../models/User';
 import { bookingOrderStageExpression, bookingOrderStages } from '../services/bookingOrderStage';
-import { conceptEnabled } from '../services/conceptPolicy';
 import { expirePendingBookings } from '../services/bookingExpiry';
 import { expireConceptOrders, netReceived } from '../services/conceptBooking';
 import { WorkflowProblem } from '../services/workflowTransactions';
@@ -56,10 +55,8 @@ export async function listShootOrders(req: Request, res: Response) {
       (service === 'concept' && !scope.concept)
     )
       throw new WorkflowProblem(403, 'Không có quyền xem loại đơn này.');
-    if (service === 'concept' && !conceptEnabled())
-      throw new WorkflowProblem(400, 'Dịch vụ concept chưa được bật.');
     const includeYearbook = scope.yearbook && service !== 'concept';
-    const includeConcept = scope.concept && conceptEnabled() && service !== 'yearbook';
+    const includeConcept = scope.concept && service !== 'yearbook';
     if (includeYearbook) await expirePendingBookings();
     if (includeConcept) await expireConceptOrders();
     const yearbooks: PipelineStage[] = [

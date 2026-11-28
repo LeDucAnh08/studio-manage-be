@@ -1,5 +1,4 @@
 process.env.TS_NODE_PROJECT = require('node:path').join(__dirname, '../tsconfig.json');
-process.env.CONCEPT_BOOKING_ENABLED = 'true';
 process.env.JWT_SECRET = 'photographer-dashboard-test';
 require('ts-node/register/transpile-only');
 const { test } = require('node:test');

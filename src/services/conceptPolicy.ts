@@ -2,7 +2,6 @@ import { createHash } from 'crypto';
 import { isValidObjectId } from 'mongoose';
 import { WorkflowProblem } from './workflowTransactions';
 
-export const conceptEnabled = () => process.env.CONCEPT_BOOKING_ENABLED === 'true';
 export const HOUR = 3600000;
 export const HOLD_MS = 15 * 60000;
 const customerOrderStatuses = {

@@ -3,7 +3,6 @@ import { createHash } from 'crypto';
 import { isValidObjectId } from 'mongoose';
 import Booking from '../models/Booking';
 import ConceptOrder from '../models/ConceptOrder';
-import { conceptEnabled } from '../services/conceptPolicy';
 import Package from '../models/Package';
 import { attachPackageDetails } from '../services/packageDetails';
 import User from '../models/User';
@@ -96,27 +95,23 @@ router.get(
       )
       .sort((a, b) => b.at.getTime() - a.at.getTime())
       .slice(0, 100);
-    if (conceptEnabled()) {
-      const concepts = await ConceptOrder.find(filter)
-        .select('events')
-        .sort({ updatedAt: -1 })
-        .limit(100)
-        .lean();
-      const conceptEvents = concepts.flatMap((order) =>
-        order.events.map((e) => ({
-          _id: e._id,
-          bookingId: order._id,
-          href: `${admin ? '' : '/account'}/concept-orders/${order._id}`,
-          message: e.message || '',
-          at: e.at || new Date(0),
-          unread: +(e.at || 0) > readAt,
-        })),
-      );
-      const combined = [...data, ...conceptEvents].sort((a, b) => +b.at - +a.at).slice(0, 100);
-      sendResponse(res, 200, true, 'OK', combined);
-      return;
-    }
-    sendResponse(res, 200, true, 'OK', data);
+    const concepts = await ConceptOrder.find(filter)
+      .select('events')
+      .sort({ updatedAt: -1 })
+      .limit(100)
+      .lean();
+    const conceptEvents = concepts.flatMap((order) =>
+      order.events.map((e) => ({
+        _id: e._id,
+        bookingId: order._id,
+        href: `${admin ? '' : '/account'}/concept-orders/${order._id}`,
+        message: e.message || '',
+        at: e.at || new Date(0),
+        unread: +(e.at || 0) > readAt,
+      })),
+    );
+    const combined = [...data, ...conceptEvents].sort((a, b) => +b.at - +a.at).slice(0, 100);
+    sendResponse(res, 200, true, 'OK', combined);
   }),
 );
 router.post(

@@ -10,7 +10,6 @@ import {
   bookingOrderStages,
   bookingShootWindow,
 } from '../services/bookingOrderStage';
-import { conceptEnabled } from '../services/conceptPolicy';
 import { WorkflowProblem } from '../services/workflowTransactions';
 import { sendResponse } from '../utils/response';
 
@@ -203,7 +202,7 @@ export function photographerOrdersPipeline(
     },
   ];
   const pipeline: PipelineStage[] = service === 'concept' ? [...concepts] : [...yearbooks];
-  if (!service && conceptEnabled())
+  if (!service)
     pipeline.push({ $unionWith: { coll: ConceptOrder.collection.name, pipeline: concepts } });
   return pipeline;
 }
@@ -226,8 +225,6 @@ export async function listPhotographerOrders(req: Request, res: Response) {
     Number(limit) > 50
   )
     throw new WorkflowProblem(400, 'Thông tin phân trang không hợp lệ.');
-  if (service === 'concept' && !conceptEnabled())
-    throw new WorkflowProblem(400, 'Dịch vụ concept chưa được bật.');
   const pipeline = photographerOrdersPipeline(req.user!._id, service);
   if (stage) pipeline.push({ $match: { stage } });
   pipeline.push({

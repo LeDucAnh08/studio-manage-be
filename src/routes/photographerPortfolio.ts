@@ -11,7 +11,7 @@ import { protect } from '../middleware/auth';
 import { requireRole } from '../middleware/role';
 import { asyncHandler } from '../middleware/asyncHandler';
 import { createRateLimit } from '../middleware/authRateLimit';
-import { conceptEnabled, objectId } from '../services/conceptPolicy';
+import { objectId } from '../services/conceptPolicy';
 import { WorkflowProblem } from '../services/workflowTransactions';
 import { sendResponse } from '../utils/response';
 import {
@@ -47,13 +47,6 @@ const handle = (work: Parameters<typeof asyncHandler>[0]) =>
       throw error;
     }
   });
-router.use(['/me/portfolio', '/:id/portfolio', '/:id/portfolio-media/:file'], (_req, res, next) => {
-  if (!conceptEnabled()) {
-    sendResponse(res, 404, false, 'Chưa mở portfolio concept.');
-    return;
-  }
-  next();
-});
 const validFile = (file: string) => /^[a-f0-9-]{36}\.webp$/.test(file);
 router.get(
   '/:id/portfolio-media/:file',
